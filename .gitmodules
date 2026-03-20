@@ -1,0 +1,3 @@
+[submodule "profilecore"]
+	path = profilecore
+	url = https://github.com/buildko89/profilecore.git
