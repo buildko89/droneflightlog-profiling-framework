@@ -89,8 +89,12 @@ def main():
             raise ValueError(f"Unknown LLM type: {args.llm}")
             
         interpreter = LLMInterpreter(context, llm_client=client)
+        # モデル名をファイル名に使用（スラッシュなどはアンダースコアに置換）
+        safe_model_name = client.model_name.replace("/", "_").replace(":", "_")
+        diag_output_path = f"output/diagnosis_{safe_model_name}.md"
+        
         # APIエラー発生時に処理を中断する
-        if not interpreter.run_interpretation(output_file="output/diagnosis.md"):
+        if not interpreter.run_interpretation(output_file=diag_output_path):
             print(f"\n[CRITICAL ERROR] LLM Interpretation failed using client '{args.llm}'. Pipeline aborted.")
             sys.exit(1)
             

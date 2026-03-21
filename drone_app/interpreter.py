@@ -44,13 +44,19 @@ class LLMInterpreter(AnalysisModule):
             return False
 
         # 5. Save results
-        text_df = pd.DataFrame({'interpretation': [diagnosis_text]})
+        client_type = self.llm_client.__class__.__name__.replace("Client", "")
+        model_name = self.llm_client.model_name
+
+        # Prepare diagnosis text with metadata
+        header_text = f"# LLMによるドローン解析結果の解釈\n\n- **使用AI**: {client_type}\n- **使用モデル**: {model_name}\n\n"
+        full_diagnosis = header_text + diagnosis_text
+
+        text_df = pd.DataFrame({'interpretation': [full_diagnosis]})
         self.context.set_data('llm_diagnosis', text_df)
         
         os.makedirs(os.path.dirname(output_file), exist_ok=True)
         with open(output_file, 'w', encoding='utf-8') as f:
-            f.write("# LLMによるドローン解析結果の解釈\n\n")
-            f.write(diagnosis_text)
+            f.write(full_diagnosis)
         
         self.log(f"Interpretation saved to: {output_file}")
         return True
