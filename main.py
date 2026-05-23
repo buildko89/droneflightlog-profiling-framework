@@ -9,7 +9,7 @@ from drone_app.parser import UlgParser
 from drone_app.analyzer import TelemetryAnalyzer
 from drone_app.visualizer import TelemetryVisualizer
 from drone_app.interpreter import LLMInterpreter
-from drone_app.llm_clients import GeminiClient, OpenAIClient, AnthropicClient, DummyClient
+from drone_app.llm_clients import create_llm_client, resolve_llm_settings
 
 def main():
     # 0. 環境変数の読み込み (.env ファイルがある場合)
@@ -23,14 +23,19 @@ def main():
     parser.add_argument(
         "--llm", 
         choices=["gemini", "openai", "anthropic", "dummy"], 
-        default="gemini", 
-        help="使用するLLMタイプ (デフォルト: gemini)"
+        help="使用するLLMタイプ (未指定時は llm_config.json または gemini)"
     )
     
     # モデル名指定用の引数
     parser.add_argument(
         "--model", "-m", 
-        help="使用するモデル名 (未指定の場合は各クライアントのデフォルトを使用)"
+        help="使用するモデル名 (未指定時は llm_config.json または各クライアントのデフォルト)"
+    )
+
+    parser.add_argument(
+        "--llm-config",
+        default="llm_config.json",
+        help="LLMサービスとモデル名を指定するJSONファイル (デフォルト: llm_config.json)"
     )
     
     args = parser.parse_args()
@@ -111,21 +116,16 @@ def main():
 
     # 5. LLMクライアントの動的生成とInterpreterによる分析の言語化
     try:
-        # クライアントの初期化（モデル名の指定がある場合とない場合に対応）
-        client_kwargs = {}
-        if args.model:
-            client_kwargs['model_name'] = args.model
-            
-        if args.llm == "gemini":
-            client = GeminiClient(**client_kwargs)
-        elif args.llm == "openai":
-            client = OpenAIClient(**client_kwargs)
-        elif args.llm == "anthropic":
-            client = AnthropicClient(**client_kwargs)
-        elif args.llm == "dummy":
-            client = DummyClient(**client_kwargs)
-        else:
-            raise ValueError(f"Unknown LLM type: {args.llm}")
+        llm_settings = resolve_llm_settings(
+            service=args.llm,
+            model_name=args.model,
+            config_path=args.llm_config,
+        )
+        client = create_llm_client(
+            service=llm_settings["service"],
+            model_name=llm_settings["model"],
+            config_path=args.llm_config,
+        )
             
         interpreter = LLMInterpreter(context, llm_client=client)
         # モデル名をファイル名に使用（スラッシュなどはアンダースコアに置換）
@@ -138,7 +138,7 @@ def main():
             sys.exit(1)
         context.set_artifact("llm_interpretation", {
             "status": "completed",
-            "client": args.llm,
+            "client": llm_settings["service"],
             "model": client.model_name,
             "output_file": diag_output_path,
         })
@@ -153,7 +153,7 @@ def main():
     context.add_log("Final report generated.")
 
     print("\n--- Analysis Complete ---")
-    print(f"LLM Client: {args.llm} (Model: {client.model_name})")
+    print(f"LLM Client: {llm_settings['service']} (Model: {client.model_name})")
     print(f"Check 'output/drone_analysis_report.md' for the results.")
 
 if __name__ == "__main__":

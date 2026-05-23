@@ -1,7 +1,131 @@
+import json
 import os
 import google.generativeai as genai
 from openai import OpenAI
 import anthropic
+
+
+SUPPORTED_LLM_TYPES = ("gemini", "openai", "anthropic", "dummy")
+DEFAULT_LLM_CONFIG_PATH = "llm_config.json"
+
+
+def load_llm_config(config_path=DEFAULT_LLM_CONFIG_PATH, required=False):
+    """
+    Loads LLM service/model settings from JSON.
+
+    Supported formats:
+    {
+      "service": "gemini",
+      "model": "gemini-2.5-flash"
+    }
+
+    or:
+    {
+      "llm": {
+        "service": "gemini",
+        "model": "gemini-2.5-flash"
+      }
+    }
+    """
+    if not config_path:
+        return {}
+
+    if not os.path.exists(config_path):
+        if required:
+            raise FileNotFoundError(f"LLM config file not found: {config_path}")
+        return {}
+
+    with open(config_path, encoding="utf-8") as config_file:
+        config = json.load(config_file)
+
+    if not isinstance(config, dict):
+        raise ValueError("LLM config must be a JSON object.")
+
+    llm_config = config.get("llm", config)
+    if not isinstance(llm_config, dict):
+        raise ValueError("LLM config field 'llm' must be a JSON object.")
+
+    service = llm_config.get("service", llm_config.get("llm"))
+    model = llm_config.get("model", llm_config.get("model_name"))
+
+    resolved = {}
+    if service is not None:
+        service = str(service).strip().lower()
+        if service not in SUPPORTED_LLM_TYPES:
+            raise ValueError(
+                f"Unsupported LLM service '{service}'. "
+                f"Choose one of: {', '.join(SUPPORTED_LLM_TYPES)}"
+            )
+        resolved["service"] = service
+
+    if model is not None and str(model).strip():
+        resolved["model"] = str(model).strip()
+
+    return resolved
+
+
+def resolve_llm_settings(
+    service=None,
+    model_name=None,
+    config_path=DEFAULT_LLM_CONFIG_PATH,
+):
+    """
+    Resolves LLM settings with this precedence:
+    explicit arguments > JSON config > built-in defaults.
+    """
+    config = load_llm_config(config_path)
+    config_service = config.get("service")
+    resolved_service = service or config_service or "gemini"
+
+    if model_name:
+        resolved_model = model_name
+    elif service and config_service and service != config_service:
+        resolved_model = None
+    else:
+        resolved_model = config.get("model")
+
+    if resolved_service not in SUPPORTED_LLM_TYPES:
+        raise ValueError(
+            f"Unsupported LLM service '{resolved_service}'. "
+            f"Choose one of: {', '.join(SUPPORTED_LLM_TYPES)}"
+        )
+
+    return {
+        "service": resolved_service,
+        "model": resolved_model,
+    }
+
+
+def get_required_api_key_name(service):
+    required_keys = {
+        "gemini": "GEMINI_API_KEY",
+        "openai": "OPENAI_API_KEY",
+        "anthropic": "ANTHROPIC_API_KEY",
+    }
+    return required_keys.get(service)
+
+
+def create_llm_client(service=None, model_name=None, config_path=DEFAULT_LLM_CONFIG_PATH):
+    settings = resolve_llm_settings(
+        service=service,
+        model_name=model_name,
+        config_path=config_path,
+    )
+    client_kwargs = {}
+    if settings["model"]:
+        client_kwargs["model_name"] = settings["model"]
+
+    if settings["service"] == "gemini":
+        return GeminiClient(**client_kwargs)
+    if settings["service"] == "openai":
+        return OpenAIClient(**client_kwargs)
+    if settings["service"] == "anthropic":
+        return AnthropicClient(**client_kwargs)
+    if settings["service"] == "dummy":
+        return DummyClient(**client_kwargs)
+
+    raise ValueError(f"Unsupported LLM service: {settings['service']}")
+
 
 class BaseLLMClient:
     """
