@@ -3,6 +3,7 @@ import sys
 import argparse
 from dotenv import load_dotenv
 from profilecore.core.context import ProfileCoreContext
+from profilecore.core.quality import build_data_quality_summary
 from profilecore.io.exporter import ReportExporter
 from drone_app.parser import UlgParser
 from drone_app.analyzer import TelemetryAnalyzer
@@ -53,6 +54,7 @@ def main():
     
     df = parser_obj.parse(topics=['sensor_combined', 'actuator_outputs'], resample_rate='100ms')
     context.set_data('raw_data', df)
+    context.set_artifact("data_quality", build_data_quality_summary(df))
     context.add_log(f"Parsed {len(df)} samples into context with key 'raw_data'")
 
     csv_path = os.path.join(workspace_dir, "telemetry_data.csv")
@@ -62,6 +64,43 @@ def main():
     # 3. TelemetryAnalyzer の分析実行
     analyzer = TelemetryAnalyzer(context)
     analyzer.analyze(data_key='raw_data', n_components=3)
+    pca_variance = context.get_data("pca_variance")
+    if pca_variance is not None:
+        context.set_artifact("feature_extraction_status", {
+            "status": "completed",
+            "method": "telemetry_pca",
+            "n_components": int(len(pca_variance)),
+        })
+    else:
+        context.set_artifact("feature_extraction_status", {
+            "status": "skipped",
+            "reason": "PCA results were not generated",
+        })
+
+    insights = []
+    if pca_variance is not None:
+        cumulative = float(pca_variance["Explained_Variance_Ratio"].sum())
+        insights.append({
+            "level": "info",
+            "message": f"PCA cumulative explained variance: {cumulative:.1%}",
+        })
+
+    anomalies = context.get_data("anomaly_timestamps")
+    if anomalies:
+        detected = {pc: times for pc, times in anomalies.items() if times}
+        if detected:
+            for pc, times in detected.items():
+                insights.append({
+                    "level": "warning",
+                    "message": f"{pc} anomaly spikes detected at {', '.join(times[:5])}",
+                })
+        else:
+            insights.append({
+                "level": "info",
+                "message": "No PCA anomaly spikes were detected.",
+            })
+
+    context.set_artifact("summary_insights", insights)
 
     # 4. TelemetryVisualizer によるグラフ出力
     visualizer = TelemetryVisualizer(context, output_dir="output")
@@ -97,6 +136,12 @@ def main():
         if not interpreter.run_interpretation(output_file=diag_output_path):
             print(f"\n[CRITICAL ERROR] LLM Interpretation failed using client '{args.llm}'. Pipeline aborted.")
             sys.exit(1)
+        context.set_artifact("llm_interpretation", {
+            "status": "completed",
+            "client": args.llm,
+            "model": client.model_name,
+            "output_file": diag_output_path,
+        })
             
     except Exception as e:
         print(f"\n[CRITICAL ERROR] Failed to initialize LLM client: {str(e)}")

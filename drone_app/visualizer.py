@@ -38,6 +38,8 @@ class TelemetryVisualizer:
         save_path = os.path.join(self.output_dir, filename)
         plt.savefig(save_path)
         plt.close()
+        if hasattr(self.context, "add_output"):
+            self.context.add_output("figure", save_path)
         print(f"PCA visualization saved to: {save_path}")
 
     def plot_raw_telemetry(self, filename='raw_telemetry.png'):
@@ -69,6 +71,8 @@ class TelemetryVisualizer:
         save_path = os.path.join(self.output_dir, filename)
         plt.savefig(save_path)
         plt.close()
+        if hasattr(self.context, "add_output"):
+            self.context.add_output("figure", save_path)
         print(f"Raw telemetry visualization saved to: {save_path}")
 
     def plot_variance(self, filename='pca_variance.png'):
@@ -89,4 +93,6 @@ class TelemetryVisualizer:
         save_path = os.path.join(self.output_dir, filename)
         plt.savefig(save_path)
         plt.close()
+        if hasattr(self.context, "add_output"):
+            self.context.add_output("figure", save_path)
         print(f"Variance visualization saved to: {save_path}")

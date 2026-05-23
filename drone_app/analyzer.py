@@ -35,7 +35,10 @@ class TelemetryAnalyzer(AnalysisModule):
         df_clean = df_clean.loc[:, (df_clean != df_clean.iloc[0]).any()]
         
         if df_clean.empty or df_clean.shape[1] < n_components:
-            self.log(f"Error: Not enough variation or components for PCA. Shape: {df_clean.shape}")
+            message = f"PCA skipped: insufficient numeric variation or components. shape={df_clean.shape}"
+            self.log(message)
+            if hasattr(self.context, "add_warning"):
+                self.context.add_warning(message)
             return
 
         self.log(f"Data pre-processed. Shape: {df_clean.shape}")
@@ -69,6 +72,20 @@ class TelemetryAnalyzer(AnalysisModule):
             index=[f'PC{i+1}' for i in range(n_components)],
             columns=df_clean.columns
         )
+
+        loadings_artifact = {}
+        for pc_name, row in loadings_df.iterrows():
+            sorted_row = row.sort_values()
+            loadings_artifact[pc_name] = {
+                "negative": [
+                    {"feature": feature, "loading": float(value)}
+                    for feature, value in sorted_row.head(5).items()
+                ],
+                "positive": [
+                    {"feature": feature, "loading": float(value)}
+                    for feature, value in sorted_row.tail(5).sort_values(ascending=False).items()
+                ],
+            }
         
         # 6. Anomaly Detection (Z-score > 3.0)
         anomaly_timestamps = {}
@@ -95,6 +112,15 @@ class TelemetryAnalyzer(AnalysisModule):
         self.context.set_data('pca_variance', variance_df)
         self.context.set_data('pca_loadings', loadings_df)
         self.context.set_data('anomaly_timestamps', anomaly_timestamps)
+        self.context.set_artifact("pca_summary", {
+            "n_components": int(pca.n_components_),
+            "explained_variance_ratio": pca.explained_variance_ratio_.tolist(),
+            "cumulative_variance": float(pca.explained_variance_ratio_.sum()),
+            "sample_count": int(df_clean.shape[0]),
+            "input_feature_count": int(df_clean.shape[1]),
+        })
+        self.context.set_artifact("pca_loadings", loadings_artifact)
+        self.context.set_artifact("anomaly_timestamps", anomaly_timestamps)
         
         self.log(f"PCA completed. Anomaly detected in: {[k for k,v in anomaly_timestamps.items() if v]}")
         self.log("Analysis results saved to context.")
