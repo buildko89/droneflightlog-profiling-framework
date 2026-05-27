@@ -171,7 +171,7 @@ def render_markdown_file(path):
         st.warning(f"ファイルが見つかりません: {path}")
 
 
-def render_download_button(label, path, mime):
+def render_download_button(label, path, mime, key):
     if not os.path.exists(path):
         return
     with open(path, "rb") as output_file:
@@ -180,6 +180,7 @@ def render_download_button(label, path, mime):
             data=output_file,
             file_name=os.path.basename(path),
             mime=mime,
+            key=key,
         )
 
 
@@ -194,6 +195,7 @@ def render_results(results):
             "AI診断結果をダウンロード",
             results["diagnosis_path"],
             "text/markdown",
+            "download_diagnosis_markdown",
         )
 
     with tab2:
@@ -205,14 +207,14 @@ def render_results(results):
                 st.image(
                     results["raw_telemetry_path"],
                     caption="時系列センサーデータとアクチュエータ出力",
-                    use_container_width=True,
+                    width="stretch",
                 )
         with col2:
             if os.path.exists(results["pca_plot_path"]):
                 st.image(
                     results["pca_plot_path"],
                     caption="主成分スコア時系列推移",
-                    use_container_width=True,
+                    width="stretch",
                 )
         
         # 寄与率は下に全幅で配置し、バランスを整える
@@ -221,7 +223,7 @@ def render_results(results):
             st.image(
                 results["pca_variance_path"],
                 caption="各主成分の寄与率",
-                use_container_width=True,
+                width="stretch",
             )
 
     with tab3:
@@ -230,14 +232,14 @@ def render_results(results):
         pca_variance = context.get_data("pca_variance")
         st.subheader("主成分寄与率")
         if pca_variance is not None:
-            st.dataframe(pca_variance, use_container_width=True)
+            st.dataframe(pca_variance, width="stretch")
         else:
             st.info("主成分寄与率のデータがありません。")
 
         st.subheader("主成分負荷量")
         pca_loadings = context.get_data("pca_loadings")
         if pca_loadings is not None:
-            st.dataframe(pca_loadings, use_container_width=True)
+            st.dataframe(pca_loadings, width="stretch")
         else:
             st.info("主成分負荷量のデータがありません。")
 
@@ -252,7 +254,7 @@ def render_results(results):
                 }
                 for component, times in anomaly_timestamps.items()
             ]
-            st.dataframe(pd.DataFrame(rows), use_container_width=True)
+            st.dataframe(pd.DataFrame(rows), width="stretch")
         else:
             st.info("異常検知タイムスタンプのデータがありません。")
 
@@ -264,8 +266,13 @@ def render_results(results):
             st.info("データ品質サマリーがありません。")
 
         st.subheader("成果物")
-        render_download_button("CSVをダウンロード", results["csv_path"], "text/csv")
-        render_download_button("統合レポートをダウンロード", results["report_path"], "text/markdown")
+        render_download_button("CSVをダウンロード", results["csv_path"], "text/csv", "download_analysis_csv")
+        render_download_button(
+            "統合レポートをダウンロード",
+            results["report_path"],
+            "text/markdown",
+            "download_integrated_report",
+        )
 
 
 def main():
@@ -298,6 +305,7 @@ def main():
         "LLMタイプの選択",
         options=list(SUPPORTED_LLM_TYPES),
         index=default_llm_index,
+        key="sidebar_llm_type",
     )
     model_default = default_model_name if llm_type == default_llm_type else ""
     model_name = st.sidebar.text_input(
@@ -355,13 +363,6 @@ def main():
                     pass
 
     # セッション状態に結果があれば、ボタン押下状態でなくても常に描画する
-    if st.session_state.analysis_results is not None:
-        render_results(st.session_state.analysis_results)
-
-
-if __name__ == "__main__":
-    main()
-   # セッション状態に結果があれば、ボタン押下状態でなくても常に描画する
     if st.session_state.analysis_results is not None:
         render_results(st.session_state.analysis_results)
 
