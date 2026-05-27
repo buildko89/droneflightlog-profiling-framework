@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 from profilecore.core.context import ProfileCoreContext
 from profilecore.core.quality import build_data_quality_summary
 from profilecore.io.exporter import ReportExporter
+from drone_app.csv_loader import CsvTelemetryLoader
 from drone_app.parser import UlgParser
 from drone_app.analyzer import TelemetryAnalyzer
 from drone_app.visualizer import TelemetryVisualizer
@@ -17,7 +18,7 @@ def main():
 
     # コマンドライン引数の解析
     parser = argparse.ArgumentParser(description="Drone Telemetry Analysis Pipeline")
-    parser.add_argument("ulg_file", help="解析対象の .ulg ファイルへのパス")
+    parser.add_argument("file_path", metavar="FILE", help="解析対象のファイル(.ulg または .csv)へのパス")
     
     # LLMタイプの選択
     parser.add_argument(
@@ -37,12 +38,17 @@ def main():
         default="llm_config.json",
         help="LLMサービスとモデル名を指定するJSONファイル (デフォルト: llm_config.json)"
     )
+
+    parser.add_argument(
+        "--csv-config",
+        help="CSVのtimestamp列や列名マッピングを指定するJSONファイル"
+    )
     
     args = parser.parse_args()
 
-    ulg_file = args.ulg_file
-    if not os.path.exists(ulg_file):
-        print(f"エラー: 指定されたファイルが見つかりません: {ulg_file}")
+    input_file = args.file_path
+    if not os.path.exists(input_file):
+        print(f"エラー: 指定されたファイルが見つかりません: {input_file}")
         return
 
     # 1. ProfileCoreContext Instantiation
@@ -53,11 +59,17 @@ def main():
     context = ProfileCoreContext(workspace_dir=workspace_dir)
     context.add_log("Pipeline started.")
 
-    # 2. UlgParser による .ulg から DataFrame への変換
-    parser_obj = UlgParser(ulg_file)
-    context.add_log(f"Parsing ULog file: {ulg_file}")
-    
-    df = parser_obj.parse(topics=['sensor_combined', 'actuator_outputs'], resample_rate='100ms')
+    # 2. .ulg または .csv から DataFrame への変換
+    if input_file.lower().endswith('.csv'):
+        loader = CsvTelemetryLoader(input_file, config_path=args.csv_config)
+        context.add_log(f"Reading CSV file: {input_file}")
+        df = loader.load()
+        context.set_artifact("csv_parse_report", loader.get_parse_report())
+    else:
+        parser_obj = UlgParser(input_file)
+        context.add_log(f"Parsing ULog file: {input_file}")
+        df = parser_obj.parse(resample_rate='100ms')
+        context.set_artifact("ulg_parse_report", parser_obj.get_parse_report())
     context.set_data('raw_data', df)
     context.set_artifact("data_quality", build_data_quality_summary(df))
     context.add_log(f"Parsed {len(df)} samples into context with key 'raw_data'")

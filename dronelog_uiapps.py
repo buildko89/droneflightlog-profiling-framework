@@ -7,6 +7,7 @@ import streamlit as st
 from dotenv import load_dotenv
 
 from drone_app.analyzer import TelemetryAnalyzer
+from drone_app.csv_loader import CsvTelemetryLoader
 from drone_app.interpreter import LLMInterpreter
 from drone_app.llm_clients import (
     SUPPORTED_LLM_TYPES,
@@ -26,6 +27,7 @@ OUTPUT_DIR = "output"
 DIAGNOSIS_FILENAME = "diagnosis.md"
 REPORT_FILENAME = "drone_analysis_report.md"
 LLM_CONFIG_PATH = "llm_config.json"
+CSV_CONFIG_PATH = "csv_mapping.json"
 
 
 def validate_api_key(llm_type):
@@ -68,7 +70,7 @@ def write_uploaded_file(uploaded_file):
         return temp_file.name
 
 
-def run_ui_analysis(ulg_file_path, llm_type, model_name, status=None):
+def run_ui_analysis(file_path, llm_type, model_name, status=None):
     os.makedirs(WORKSPACE_DIR, exist_ok=True)
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -77,8 +79,17 @@ def run_ui_analysis(ulg_file_path, llm_type, model_name, status=None):
 
     if status:
         status.write("データパース中...")
-    parser_obj = UlgParser(ulg_file_path)
-    df = parser_obj.parse(topics=["sensor_combined", "actuator_outputs"], resample_rate="100ms")
+    if file_path.lower().endswith(".csv"):
+        csv_config_path = CSV_CONFIG_PATH if os.path.exists(CSV_CONFIG_PATH) else None
+        loader = CsvTelemetryLoader(file_path, config_path=csv_config_path)
+        context.add_log(f"Reading CSV file: {file_path}")
+        df = loader.load()
+        context.set_artifact("csv_parse_report", loader.get_parse_report())
+    else:
+        parser_obj = UlgParser(file_path)
+        context.add_log(f"Parsing ULog file: {file_path}")
+        df = parser_obj.parse(resample_rate="100ms")
+        context.set_artifact("ulg_parse_report", parser_obj.get_parse_report())
     context.set_data("raw_data", df)
     context.set_artifact("data_quality", build_data_quality_summary(df))
     context.add_log(f"Parsed {len(df)} samples into context with key 'raw_data'")
@@ -303,11 +314,11 @@ def main():
         st.sidebar.info("dummy はAPIキーなしで動作確認できます。")
 
     st.title("sincipal - ドローンフライトログ AI×統計解析ダッシュボード")
-    st.write("PX4フライトログ（.ulg）をアップロードし、PCAとLLMによる診断を実行します。")
+    st.write("フライトログ（.ulg または .csv）をアップロードし、PCAとLLMによる診断を実行します。")
 
     uploaded_file = st.file_uploader(
-        "ULogファイルをアップロードしてください (.ulg)",
-        type=["ulg"],
+        "フライトログファイルをアップロードしてください (.ulg, .csv)",
+        type=["ulg", "csv"],
         accept_multiple_files=False,
     )
 
@@ -344,6 +355,13 @@ def main():
                     pass
 
     # セッション状態に結果があれば、ボタン押下状態でなくても常に描画する
+    if st.session_state.analysis_results is not None:
+        render_results(st.session_state.analysis_results)
+
+
+if __name__ == "__main__":
+    main()
+   # セッション状態に結果があれば、ボタン押下状態でなくても常に描画する
     if st.session_state.analysis_results is not None:
         render_results(st.session_state.analysis_results)
 

@@ -67,6 +67,55 @@ class TestDroneProfileCoreIntegration(unittest.TestCase):
             "level": "info",
             "message": "Synthetic telemetry integration test.",
         }])
+        self.context.set_artifact("ulg_parse_report", {
+            "parsed_topics": ["sensor_combined", "actuator_outputs"],
+            "missing_topics": [],
+            "failed_topics": {},
+            "resolved_alternatives": {"vehicle_global_position": "vehicle_gps_position"},
+            "topic_stats": {
+                "sensor_combined": {
+                    "rows": 60,
+                    "columns": 4,
+                    "instances": 1,
+                    "parsed_instances": 1,
+                },
+            },
+            "instance_stats": {
+                "sensor_combined": {
+                    "topic": "sensor_combined",
+                    "multi_instance": 0,
+                    "rows": 60,
+                    "columns": 4,
+                },
+            },
+            "resample_rate": "100ms",
+            "fill_strategy": "bounded",
+            "fill_limits": {"sensor_combined": 1},
+            "sparse_sources": [],
+            "output_rows": 60,
+            "output_columns": 5,
+            "output_missing_values": 0,
+        })
+        self.context.set_artifact("csv_parse_report", {
+            "source_file": "sample.csv",
+            "rows": 60,
+            "columns": 5,
+            "timestamp_column": "time_s",
+            "timestamp_status": "numeric",
+            "timestamp_unit": "s",
+            "monotonic_timestamp": True,
+            "duplicate_timestamps": 0,
+            "numeric_column_count": 5,
+            "missing_values": 0,
+            "column_mapping_applied": {
+                "acc_x": "sensor_combined_accelerometer_m_s2[0]",
+            },
+            "numeric_columns": ["sensor_combined_accelerometer_m_s2[0]"],
+            "coerced_numeric_columns": [],
+            "unmapped_config_columns": [],
+            "all_nan_columns": [],
+            "constant_columns": [],
+        })
 
         visualizer = TelemetryVisualizer(self.context, output_dir=self.output_dir)
         visualizer.plot_raw_telemetry(filename="raw_telemetry.png")
@@ -86,6 +135,11 @@ class TestDroneProfileCoreIntegration(unittest.TestCase):
         self.assertIn("Key Findings", report)
         self.assertIn("PCA Summary", report)
         self.assertIn("PCA Loadings", report)
+        self.assertIn("ULog Parse Report", report)
+        self.assertIn("Resolved Alternatives", report)
+        self.assertIn("vehicle_gps_position", report)
+        self.assertIn("CSV Parse Report", report)
+        self.assertIn("Column Mapping", report)
         self.assertIn("raw_telemetry.png", report)
         self.assertIn("pca_plot.png", report)
         self.assertIn("pca_variance.png", report)

@@ -51,16 +51,21 @@ class TelemetryVisualizer:
             print("Error: No raw data found in context.")
             return
 
+        numeric_df = df.select_dtypes(include=['number'])
+        if numeric_df.empty:
+            print("Error: No numeric raw telemetry columns found in context.")
+            return
+
         # Choose a subset of columns to plot (limit to top 10 if too many)
-        cols_to_plot = [col for col in df.columns if 'accelerometer' in col or 'output' in col][:8]
+        cols_to_plot = [col for col in numeric_df.columns if 'accelerometer' in col or 'output' in col][:8]
         
         if not cols_to_plot:
-            cols_to_plot = df.columns[:8]
+            cols_to_plot = numeric_df.columns[:8]
 
         plt.figure(figsize=(12, 8))
         for i, col in enumerate(cols_to_plot):
             plt.subplot(len(cols_to_plot), 1, i+1)
-            plt.plot(df.index.total_seconds(), df[col])
+            plt.plot(numeric_df.index.total_seconds(), numeric_df[col])
             plt.ylabel(col.split('_')[-1])
             plt.title(col, fontsize=10)
             plt.grid(True)
