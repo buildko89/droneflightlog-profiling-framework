@@ -25,6 +25,10 @@ class LLMInterpreter(AnalysisModule):
         pca_loadings = self.context.get_data('pca_loadings')
         anomaly_timestamps = self.context.get_data('anomaly_timestamps')
 
+        # 新たに structural_break と flight_history をContextから取得する（存在する場合）
+        structural_break = self.context.get_data('structural_break')
+        flight_history = self.context.get_data('flight_history')
+
         if pca_variance is None or pca_scores is None:
             self.log("Error: PCA results not found in context.")
             return False
@@ -32,9 +36,60 @@ class LLMInterpreter(AnalysisModule):
         # 2. Calculate basic statistics
         stats_summary = self._calculate_stats(pca_variance, pca_scores, pca_loadings, anomaly_timestamps)
         
+        # Add history-related data to stats summary
+        stats_summary['structural_break'] = structural_break
+        stats_summary['flight_history'] = flight_history
+
         # 3. Create prompt
         prompt = self._create_prompt(stats_summary)
         
+        # Check execution mode: api vs export
+        mode = self.context.settings.get('llm_mode', 'api')
+        if mode == 'export':
+            self.log("LLM Mode is 'export'. Exporting prompt to file...")
+            workspace_dir = getattr(self.context, 'workspace_dir', 'workspace')
+            prompt_file = os.path.join(workspace_dir, "llm_prompt.txt")
+            try:
+                os.makedirs(os.path.dirname(prompt_file), exist_ok=True)
+                with open(prompt_file, 'w', encoding='utf-8') as f:
+                    f.write(prompt)
+                self.log(f"Prompt successfully exported to: {prompt_file}")
+            except Exception as e:
+                self.log(f"Error exporting prompt to {prompt_file}: {str(e)}")
+                return False
+            
+            # Write instructions to the output markdown file
+            client_type = self.llm_client.__class__.__name__.replace("Client", "")
+            model_name = self.llm_client.model_name
+            instructions = f"""# LLMによるドローン解析結果の解釈 (プロンプト・エクスポート)
+
+- **想定クライアント**: {client_type}
+- **想定モデル**: {model_name}
+- **ステータス**: プロンプト出力済み
+
+本フライト解析の評価用プロンプトがファイルにエクスポートされました。
+
+### 実行方法
+
+ローカルの自律型エージェントツール (Claude Code / Agy / Codex 等) を使用して、以下のファイルに記載されているプロンプトを実行してください。
+
+- **プロンプトファイルパス**: `{prompt_file}`
+
+#### 実行コマンド例（Claude Codeの場合）:
+```bash
+claude "Read {prompt_file} and generate a detailed flight diagnosis report based on its instructions, saving the result in output/diagnosis_{model_name.replace("/", "_").replace(":", "_")}.md"
+```
+"""
+            text_df = pd.DataFrame({'interpretation': [instructions]})
+            self.context.set_data('llm_diagnosis', text_df)
+            
+            os.makedirs(os.path.dirname(output_file), exist_ok=True)
+            with open(output_file, 'w', encoding='utf-8') as f:
+                f.write(instructions)
+            
+            self.log(f"Export placeholder saved to: {output_file}")
+            return True
+
         # 4. Call LLM Client
         try:
             diagnosis_text = self.llm_client.generate_text(prompt)
@@ -127,6 +182,44 @@ class LLMInterpreter(AnalysisModule):
             prompt += f"  - 開始/終了値: {s['start_value']:.4f} / {s['end_value']:.4f}\n"
             prompt += f"  - 全体的なトレンド (終了-開始): {s['trend']:.4f}\n"
 
+        # 過去のフライト履歴との比較セクションの追加
+        flight_history = stats.get('flight_history')
+        structural_break = stats.get('structural_break')
+
+        if flight_history is not None:
+            prompt += "\n### 過去のフライト履歴との比較\n"
+            prompt += f"- 過去のフライト数: {len(flight_history)}\n"
+            prompt += "- 各主成分の履歴データ（分散の直近の推移）:\n"
+            var_cols = [c for c in flight_history.columns if c.endswith('_variance')]
+            for col in var_cols:
+                # Show up to last 10 historical values
+                vals = [f"{v:.4f}" for v in flight_history[col].tail(10)]
+                vals_str = " -> ".join(vals)
+                prompt += f"  - {col}: {vals_str}\n"
+
+        # 構造的変化の警告情報の注入
+        break_warning_info = ""
+        if isinstance(structural_break, dict):
+            if structural_break.get('detected', False):
+                break_warning_info = (
+                    "\n【警告：構造的変化（経年劣化の兆候）の検出】\n"
+                    "過去の飛行履歴と比較して、構造的な変化（経年劣化の兆候）が検知されました。モーター等の摩耗が疑われます。\n"
+                    "検知された項目と詳細:\n"
+                )
+                for col in structural_break.get('detected_columns', []):
+                    details = structural_break.get('break_details', {}).get(col, {})
+                    break_warning_info += (
+                        f"- {col}: 直近2フライトの値 ({details.get('prev_value', 0.0):.4f}, {details.get('last_value', 0.0):.4f}) が、"
+                        f"閾値 {details.get('threshold', 0.0):.4f}（過去平均 {details.get('mean', 0.0):.4f} + 2標準偏差 {2 * details.get('std', 0.0):.4f}）を連続して超えました。\n"
+                    )
+                break_warning_info += f"変化検出フライト日時: {structural_break.get('timestamp', 'N/A')}\n"
+            elif structural_break.get('status') == 'skipped':
+                prompt += f"\n- 経年劣化分析ステータス: スキップ ({structural_break.get('reason', '')})\n"
+            else:
+                prompt += "\n- 経年劣化分析ステータス: 特記すべき構造的変化（経年劣化の兆候）は検出されませんでした。\n"
+
+        prompt += break_warning_info
+
         prompt += """
 ### 依頼内容
 - 上記の数値から読み取れるドローンの挙動（安定性、特異な変化、トレンドなど）を専門家として分析してください。
@@ -134,6 +227,16 @@ class LLMInterpreter(AnalysisModule):
 - 特定の時刻に異常なスパイクが検出されている場合は、そのタイミングでドローンにどのような物理的衝撃や操作が行われたと推測されるか、時刻を明記して考察してください。
 - 主成分スコアの変動（標準偏差の大きさやトレンド）が具体的にどのセンサー群のどのような振る舞いを意味している可能性があるか考察してください。
 - 異常が疑われる場合はその旨を指摘してください。
-- 解説は丁寧な日本語で行ってください。
+"""
+
+        # 構造的変化がある場合、予知保全のアドバイスを要求
+        if isinstance(structural_break, dict) and structural_break.get('detected', False):
+            prompt += """- 過去の飛行履歴との比較において構造的変化（経年劣化の兆候）が検知されているため、長期的な予知保全の観点（モーター、ローター、ギアなどの磨耗・劣化）から、今後の保守点検項目や推奨されるアクションのアドバイスを詳しく提示してください。
+"""
+        else:
+            prompt += """- 長期的な安定運用のための予知保全の観点からのアドバイス（点検推奨項目など）があれば含めてください。
+"""
+
+        prompt += """- 解説は丁寧な日本語で行ってください。
 """
         return prompt

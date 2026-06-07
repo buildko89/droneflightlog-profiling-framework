@@ -47,6 +47,7 @@ def load_llm_config(config_path=DEFAULT_LLM_CONFIG_PATH, required=False):
 
     service = llm_config.get("service", llm_config.get("llm"))
     model = llm_config.get("model", llm_config.get("model_name"))
+    mode = llm_config.get("mode")
 
     resolved = {}
     if service is not None:
@@ -61,6 +62,9 @@ def load_llm_config(config_path=DEFAULT_LLM_CONFIG_PATH, required=False):
     if model is not None and str(model).strip():
         resolved["model"] = str(model).strip()
 
+    if mode is not None:
+        resolved["mode"] = str(mode).strip().lower()
+
     return resolved
 
 
@@ -68,6 +72,7 @@ def resolve_llm_settings(
     service=None,
     model_name=None,
     config_path=DEFAULT_LLM_CONFIG_PATH,
+    mode=None,
 ):
     """
     Resolves LLM settings with this precedence:
@@ -84,6 +89,12 @@ def resolve_llm_settings(
     else:
         resolved_model = config.get("model")
 
+    # Resolve mode: CLI arg > JSON config > default 'api'
+    resolved_mode = mode or config.get("mode") or "api"
+    resolved_mode = resolved_mode.lower()
+    if resolved_mode not in ("api", "export"):
+        resolved_mode = "api"
+
     if resolved_service not in SUPPORTED_LLM_TYPES:
         raise ValueError(
             f"Unsupported LLM service '{resolved_service}'. "
@@ -93,6 +104,7 @@ def resolve_llm_settings(
     return {
         "service": resolved_service,
         "model": resolved_model,
+        "mode": resolved_mode,
     }
 
 

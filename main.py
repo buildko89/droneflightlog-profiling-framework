@@ -44,6 +44,12 @@ def main():
         help="CSVのtimestamp列や列名マッピングを指定するJSONファイル"
     )
     
+    parser.add_argument(
+        "--mode",
+        choices=["api", "export"],
+        help="LLM連携モード (api: API接続, export: プロンプト書き出し。未指定時は llm_config.json または api)"
+    )
+    
     args = parser.parse_args()
 
     input_file = args.file_path
@@ -126,13 +132,22 @@ def main():
     visualizer.plot_variance(filename="pca_variance.png")
     context.add_log("Visualizations generated and saved to 'output/' folder.")
 
+    # 履歴の記録と経年劣化の検知
+    from drone_app.history_manager import FlightHistoryManager
+    from drone_app.break_detector import StructuralBreakAnalyzer
+    
+    FlightHistoryManager(context).update_history()
+    StructuralBreakAnalyzer(context).detect_breaks()
+
     # 5. LLMクライアントの動的生成とInterpreterによる分析の言語化
     try:
         llm_settings = resolve_llm_settings(
             service=args.llm,
             model_name=args.model,
             config_path=args.llm_config,
+            mode=args.mode,
         )
+        context.set_setting('llm_mode', llm_settings["mode"])
         client = create_llm_client(
             service=llm_settings["service"],
             model_name=llm_settings["model"],

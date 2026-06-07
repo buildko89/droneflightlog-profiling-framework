@@ -9,11 +9,14 @@ from dotenv import load_dotenv
 from drone_app.analyzer import TelemetryAnalyzer
 from drone_app.csv_loader import CsvTelemetryLoader
 from drone_app.interpreter import LLMInterpreter
+from drone_app.history_manager import FlightHistoryManager
+from drone_app.break_detector import StructuralBreakAnalyzer
 from drone_app.llm_clients import (
     SUPPORTED_LLM_TYPES,
     create_llm_client,
     get_required_api_key_name,
     load_llm_config,
+    resolve_llm_settings,
 )
 from drone_app.parser import UlgParser
 from drone_app.visualizer import TelemetryVisualizer
@@ -127,7 +130,23 @@ def run_ui_analysis(file_path, llm_type, model_name, status=None):
     context.add_log("Visualizations generated and saved to 'output/' folder.")
 
     if status:
+        status.write("履歴の記録と経年劣化の検知中...")
+    
+    # 履歴の記録と経年劣化の検知
+    FlightHistoryManager(context).update_history()
+    StructuralBreakAnalyzer(context).detect_breaks()
+
+    if status:
         status.write("AI診断文生成中...")
+        
+    # LLMの設定解決
+    llm_settings = resolve_llm_settings(
+        service=llm_type,
+        model_name=model_name or None,
+        config_path=LLM_CONFIG_PATH,
+    )
+    context.set_setting('llm_mode', llm_settings["mode"])
+
     validate_api_key(llm_type)
     client = create_llm_client(
         service=llm_type,
@@ -186,7 +205,7 @@ def render_download_button(label, path, mime, key):
 
 def render_results(results):
     context = results["context"]
-    tab1, tab2, tab3 = st.tabs(["AI診断結果", "統計ビジュアル", "詳細データ"])
+    tab1, tab2, tab3, tab4 = st.tabs(["AI診断結果", "統計ビジュアル", "詳細データ", "経年劣化と飛行履歴"])
 
     with tab1:
         st.header("AIによるフライト状態の診断")
@@ -274,12 +293,79 @@ def render_results(results):
             "download_integrated_report",
         )
 
+    with tab4:
+        st.header("経年劣化（構造的変化）の分析と履歴")
+        
+        structural_break = context.get_data('structural_break')
+        flight_history = context.get_data('flight_history')
+        
+        # 1. 判定結果の表示
+        if isinstance(structural_break, dict):
+            status = structural_break.get('status', 'success')
+            detected = structural_break.get('detected', False)
+            
+            if status == 'skipped':
+                st.info(f"📊 経年劣化判定ステータス: スキップ ({structural_break.get('reason', 'データ不足')})")
+            else:
+                if detected:
+                    st.warning("⚠️ 【警告】経年劣化（構造的変化の兆候）が検出されました！")
+                    st.write("過去の安定飛行データに基づく閾値（平均 + 2標準偏差）を、直近2フライト連続で超過している項目があります。モーターの摩耗や構造的な異常が疑われます。保守点検・部品交換をご検討ください。")
+                else:
+                    st.success("✅ 経年劣化判定ステータス: 正常 (特記すべき構造的変化は検出されませんでした)")
+                
+                # 詳細データ表示
+                st.subheader("判定詳細")
+                details = []
+                for col, det in structural_break.get('break_details', {}).items():
+                    details.append({
+                        "項目 (分散)": col,
+                        "直近の値": f"{det.get('last_value', 0.0):.4f}",
+                        "前回の値": f"{det.get('prev_value', 0.0):.4f}",
+                        "閾値 (平均+2SD)": f"{det.get('threshold', 0.0):.4f}",
+                        "過去平均": f"{det.get('mean', 0.0):.4f}",
+                        "標準偏差": f"{det.get('std', 0.0):.4f}",
+                        "超過判定": "⚠️ 劣化の疑い" if det.get('detected') else "正常"
+                    })
+                if details:
+                    st.dataframe(pd.DataFrame(details), use_container_width=True)
+        else:
+            st.info("経年劣化分析データが存在しません。解析を実行してください。")
+            
+        st.write("---")
+        
+        # 2. 履歴推移グラフとデータフレーム表示
+        if flight_history is not None:
+            st.subheader("複数フライトの統計量（分散）の推移")
+            var_cols = [c for c in flight_history.columns if c.endswith('_variance')]
+            if var_cols:
+                try:
+                    chart_df = flight_history[var_cols].copy()
+                    chart_df.index = pd.to_datetime(chart_df.index)
+                    chart_df.index = chart_df.index.strftime('%Y-%m-%d %H:%M')
+                    st.line_chart(chart_df)
+                except Exception:
+                    st.line_chart(flight_history[var_cols])
+                
+            st.subheader("履歴データ一覧")
+            st.dataframe(flight_history, use_container_width=True)
+            
+            history_file = os.path.join(WORKSPACE_DIR, "flight_history.csv")
+            if os.path.exists(history_file):
+                render_download_button(
+                    "飛行履歴データ (flight_history.csv) をダウンロード",
+                    history_file,
+                    "text/csv",
+                    "download_flight_history_csv"
+                )
+        else:
+            st.info("フライト履歴データが蓄積されていません。")
+
 
 def main():
     load_dotenv()
 
     st.set_page_config(
-        page_title="sincipal - ドローンフライトログ AI×統計解析ダッシュボード",
+        page_title="profilecore - ドローンフライトログ AI×統計解析ダッシュボード",
         layout="wide",
         initial_sidebar_state="expanded",
     )
@@ -300,7 +386,7 @@ def main():
     default_llm_index = list(SUPPORTED_LLM_TYPES).index(default_llm_type)
     default_model_name = llm_config.get("model", "")
 
-    st.sidebar.title("sincipal 解析設定")
+    st.sidebar.title("profilecore 解析設定")
     llm_type = st.sidebar.selectbox(
         "LLMタイプの選択",
         options=list(SUPPORTED_LLM_TYPES),
@@ -321,7 +407,7 @@ def main():
     if llm_type == "dummy":
         st.sidebar.info("dummy はAPIキーなしで動作確認できます。")
 
-    st.title("sincipal - ドローンフライトログ AI×統計解析ダッシュボード")
+    st.title("profilecore - ドローンフライトログ AI×統計解析ダッシュボード")
     st.write("フライトログ（.ulg または .csv）をアップロードし、PCAとLLMによる診断を実行します。")
 
     uploaded_file = st.file_uploader(

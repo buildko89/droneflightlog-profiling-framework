@@ -8,6 +8,7 @@ env/
 __pycache__/
 *.py[cod]
 *$py.class
+.pytest_cache/
 
 # Distribution / packaging
 build/
@@ -38,3 +39,6 @@ Thumbs.db
 # Project specific
 output/
 .antigravitycli/
+
+# workspace
+workspace/
