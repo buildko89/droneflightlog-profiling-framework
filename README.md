@@ -392,7 +392,7 @@ python -m streamlit run .\dronelog_uiapps.py
 
 ## 注意事項
 
-- Gemini 以外の OpenAI / Anthropic 連携は、有料 API の利用が発生する可能性があります。
+- Gemini / OpenAI / Anthropic 連携は、有料 API の利用が発生する可能性があります。
 - API キー未設定時は、CLI ではエラー終了し、Web UI では画面上にエラーを表示します。
 - `dummy` は API キーなしの動作確認用です。実際の診断文は生成しません。
 - `llm_config.json` の `service` と CLI の `--llm` が異なる場合、CLI の `--llm` が優先されます。この場合、`--model` を指定しなければ選択サービスのデフォルトモデルを使います。
