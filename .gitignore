@@ -42,3 +42,9 @@ output/
 
 # workspace
 workspace/
+
+# logs
+log/
+
+# ai generated files
+devai/

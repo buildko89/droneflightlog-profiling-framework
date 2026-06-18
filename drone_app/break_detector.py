@@ -6,8 +6,17 @@ class StructuralBreakAnalyzer(AnalysisModule):
     Analyzes flight history time-series data to detect structural breaks
     (such as irreversible physical degradation or wearing out of motors).
     """
-    def __init__(self, context):
+    def __init__(
+        self,
+        context,
+        min_history=5,
+        recent_window=2,
+        threshold_sigma=2.0,
+    ):
         super().__init__(context)
+        self.min_history = int(min_history)
+        self.recent_window = int(recent_window)
+        self.threshold_sigma = float(threshold_sigma)
 
     def detect_breaks(self):
         """
@@ -19,13 +28,18 @@ class StructuralBreakAnalyzer(AnalysisModule):
         # 1. Contextから flight_history を取得する
         flight_history = self.context.get_data('flight_history')
         
-        # データが3フライト分未満の場合は「データ不足」として処理をスキップ
-        if flight_history is None or len(flight_history) < 3:
-            self.log("Data insufficient: Less than 3 flights in flight history. Skipping break detection.")
+        required_history = max(self.min_history, self.recent_window + 1)
+        if flight_history is None or len(flight_history) < required_history:
+            self.log(
+                "Data insufficient: "
+                f"Less than {required_history} flights in flight history. "
+                "Skipping break detection."
+            )
             result_dict = {
                 'detected': False,
                 'status': 'skipped',
-                'reason': 'Data insufficient (less than 3 flights)'
+                'reason': f'Data insufficient (less than {required_history} flights)',
+                'config': self._config_dict(),
             }
             self.context.set_data('structural_break', result_dict)
             return result_dict
@@ -33,6 +47,15 @@ class StructuralBreakAnalyzer(AnalysisModule):
         # 2. 対象カラムに対して、簡易的な変化点検知を行う
         # Target columns: any columns that end with '_variance' (e.g. PC1_variance)
         target_cols = [c for c in flight_history.columns if c.endswith('_variance')]
+        if not target_cols:
+            result_dict = {
+                'detected': False,
+                'status': 'skipped',
+                'reason': 'No variance columns found in flight history',
+                'config': self._config_dict(),
+            }
+            self.context.set_data('structural_break', result_dict)
+            return result_dict
         
         detected = False
         break_details = {}
@@ -40,30 +63,35 @@ class StructuralBreakAnalyzer(AnalysisModule):
         break_timestamps = []
         
         for col in target_cols:
-            series = flight_history[col]
+            series = pd.to_numeric(flight_history[col], errors='coerce').dropna()
+            if len(series) < required_history:
+                break_details[col] = {
+                    'detected': False,
+                    'reason': f'Insufficient numeric values (less than {required_history})',
+                }
+                continue
             
-            # Baseline is everything except the last 2 flights being evaluated
-            baseline = series.iloc[:-2]
+            # Baseline is everything except the recent flights being evaluated.
+            baseline = series.iloc[:-self.recent_window]
+            recent_values = series.iloc[-self.recent_window:]
             mean_val = float(baseline.mean())
             std_val = float(baseline.std())
             if pd.isna(std_val):
                 std_val = 0.0
                 
-            threshold = mean_val + 2.0 * std_val
+            threshold = mean_val + self.threshold_sigma * std_val
             
-            # Get the two most recent values (guaranteed to exist since len >= 5)
-            val_last = float(series.iloc[-1])
-            val_prev = float(series.iloc[-2])
-            
-            # Check if they exceed the threshold consecutively (2 times in a row)
-            is_break = (val_last > threshold) and (val_prev > threshold)
+            is_break = bool((recent_values > threshold).all())
             
             break_details[col] = {
                 'mean': mean_val,
                 'std': std_val,
                 'threshold': threshold,
-                'last_value': val_last,
-                'prev_value': val_prev,
+                'last_value': float(recent_values.iloc[-1]),
+                'prev_value': float(recent_values.iloc[-2]) if len(recent_values) >= 2 else None,
+                'recent_values': [float(value) for value in recent_values],
+                'baseline_count': int(len(baseline)),
+                'recent_window': int(self.recent_window),
                 'detected': is_break
             }
             
@@ -83,7 +111,8 @@ class StructuralBreakAnalyzer(AnalysisModule):
             # Use the latest flight's timestamp as the detection timestamp
             'timestamp': str(flight_history.index[-1]),
             # If multiple columns have breaks, use the latest break timestamp
-            'break_timestamp': break_timestamps[-1] if break_timestamps else None
+            'break_timestamp': break_timestamps[-1] if break_timestamps else None,
+            'config': self._config_dict(),
         }
         
         self.context.set_data('structural_break', result_dict)
@@ -93,3 +122,9 @@ class StructuralBreakAnalyzer(AnalysisModule):
     def analyze(self):
         return self.detect_breaks()
 
+    def _config_dict(self):
+        return {
+            'min_history': int(self.min_history),
+            'recent_window': int(self.recent_window),
+            'threshold_sigma': float(self.threshold_sigma),
+        }

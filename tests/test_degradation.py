@@ -43,6 +43,7 @@ class TestDegradationModules(unittest.TestCase):
         self.assertIn('PC1_variance', history_df.columns)
         self.assertIn('PC1_trend', history_df.columns)
         self.assertIn('PC1_anomaly_count', history_df.columns)
+        self.assertIn('source_sha256', history_df.columns)
 
         # Expected metrics
         # PC1 variance of [1, 2, 3, 4, 5] is 2.5
@@ -57,6 +58,31 @@ class TestDegradationModules(unittest.TestCase):
         self.assertTrue(os.path.exists(csv_path))
         loaded_df = pd.read_csv(csv_path, index_col=0, parse_dates=True)
         self.assertEqual(len(loaded_df), 1)
+
+    def test_history_manager_records_source_metadata_and_duplicate(self):
+        source_path = os.path.join(self.workspace_dir, "flight.csv")
+        with open(source_path, "w", encoding="utf-8") as source_file:
+            source_file.write("time,value\n0,1\n1,2\n")
+
+        pca_scores = pd.DataFrame(
+            {'PC1': [1.0, 2.0, 3.0]},
+            index=pd.to_timedelta([0, 100, 200], unit='ms')
+        )
+        self.context.set_data('pca_scores', pca_scores)
+        self.context.set_data('anomaly_timestamps', {})
+
+        manager = FlightHistoryManager(self.context)
+        first_history = manager.update_history(source_path=source_path)
+        second_history = manager.update_history(source_path=source_path, duplicate_policy='skip')
+
+        self.assertEqual(len(first_history), 1)
+        self.assertEqual(len(second_history), 1)
+        self.assertEqual(second_history['source_file_name'].iloc[0], "flight.csv")
+        self.assertTrue(isinstance(second_history['source_sha256'].iloc[0], str))
+
+        duplicate = self.context.get_artifact('flight_history_duplicate')
+        self.assertTrue(duplicate['detected'])
+        self.assertEqual(duplicate['matching_rows'], 1)
 
     def test_history_manager_appends_to_existing_file(self):
         csv_path = os.path.join(self.workspace_dir, "flight_history.csv")
@@ -87,8 +113,8 @@ class TestDegradationModules(unittest.TestCase):
         # New variance is var of [10, 12] which is 2.0
         self.assertAlmostEqual(history_df['PC1_variance'].iloc[-1], 2.0)
 
-    def test_break_detector_skips_when_less_than_3_flights(self):
-        # Create history with only 2 flights
+    def test_break_detector_skips_when_less_than_min_history(self):
+        # Create history with fewer flights than the default minimum.
         times = [pd.Timestamp.now() - pd.Timedelta(hours=i) for i in range(2)]
         history_df = pd.DataFrame(
             {'PC1_variance': [1.0, 1.1]},
@@ -103,13 +129,14 @@ class TestDegradationModules(unittest.TestCase):
         self.assertFalse(result['detected'])
         self.assertEqual(result['status'], 'skipped')
         self.assertIn('reason', result)
+        self.assertEqual(result['config']['min_history'], 5)
         self.assertEqual(self.context.get_data('structural_break'), result)
 
     def test_break_detector_no_break_when_values_under_threshold(self):
-        # Create history with 3 flights (stable variance)
-        times = [pd.Timestamp.now() - pd.Timedelta(hours=i) for i in range(3)]
+        # Create history with enough stable flights.
+        times = [pd.Timestamp.now() - pd.Timedelta(hours=i) for i in range(5)]
         history_df = pd.DataFrame(
-            {'PC1_variance': [1.0, 1.0, 1.0]},
+            {'PC1_variance': [1.0, 1.0, 1.0, 1.0, 1.0]},
             index=times
         )
         history_df.index.name = 'timestamp'
@@ -121,6 +148,7 @@ class TestDegradationModules(unittest.TestCase):
         self.assertFalse(result['detected'])
         self.assertEqual(result['status'], 'success')
         self.assertEqual(len(result['detected_columns']), 0)
+        self.assertEqual(result['config']['recent_window'], 2)
 
     def test_break_detector_detects_break(self):
         # Create history with 6 flights where the last 2 are breaks
@@ -152,8 +180,25 @@ class TestDegradationModules(unittest.TestCase):
         # Mock PCA outputs
         pca_variance = pd.DataFrame({'Component': ['PC1'], 'Explained_Variance_Ratio': [1.0]})
         pca_scores = pd.DataFrame({'PC1': [1.0, 2.0]}, index=pd.to_timedelta([0, 100], unit='ms'))
+        pca_loadings = pd.DataFrame(
+            {'sensor_combined_accelerometer_m_s2[0]': [0.9]},
+            index=['PC1'],
+        )
         self.context.set_data('pca_variance', pca_variance)
         self.context.set_data('pca_scores', pca_scores)
+        self.context.set_data('pca_loadings', pca_loadings)
+        self.context.set_artifact('pca_preprocessing_report', {
+            'selected_column_count': 1,
+            'requested_n_components': 1,
+            'effective_n_components': 1,
+            'all_nan_columns': [],
+            'constant_columns': [],
+        })
+        self.context.set_artifact('anomaly_detection_config', {
+            'method': 'pca_score_zscore',
+            'z_threshold': 3.0,
+            'comparison': 'absolute_z_score_greater_than_threshold',
+        })
 
         # Setup flight history and structural break
         times = [pd.Timestamp.now() - pd.Timedelta(hours=5-i) for i in range(6)]
@@ -192,6 +237,9 @@ class TestDegradationModules(unittest.TestCase):
         self.assertIn("警告：構造的変化（経年劣化の兆候）の検出", prompt_arg)
         self.assertIn("モーター等の摩耗が疑われます", prompt_arg)
         self.assertIn("長期的な予知保全", prompt_arg)
+        self.assertIn("PCAの主成分は統計的な合成軸", prompt_arg)
+        self.assertIn("Z-score閾値", prompt_arg)
+        self.assertIn("加速度", prompt_arg)
 
     def test_interpreter_export_mode(self):
         # Mock LLM Client

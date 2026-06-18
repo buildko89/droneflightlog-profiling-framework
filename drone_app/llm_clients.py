@@ -117,7 +117,12 @@ def get_required_api_key_name(service):
     return required_keys.get(service)
 
 
-def create_llm_client(service=None, model_name=None, config_path=DEFAULT_LLM_CONFIG_PATH):
+def create_llm_client(
+    service=None,
+    model_name=None,
+    config_path=DEFAULT_LLM_CONFIG_PATH,
+    require_api_key=True,
+):
     settings = resolve_llm_settings(
         service=service,
         model_name=model_name,
@@ -126,6 +131,7 @@ def create_llm_client(service=None, model_name=None, config_path=DEFAULT_LLM_CON
     client_kwargs = {}
     if settings["model"]:
         client_kwargs["model_name"] = settings["model"]
+    client_kwargs["require_api_key"] = require_api_key
 
     if settings["service"] == "gemini":
         return GeminiClient(**client_kwargs)
@@ -154,14 +160,15 @@ class GeminiClient(BaseLLMClient):
     """
     Client for Google Gemini API.
     """
-    def __init__(self, model_name="gemini-2.5-flash"):
+    def __init__(self, model_name="gemini-2.5-flash", require_api_key=True):
         self.model_name = model_name
         self.api_key = os.getenv("GEMINI_API_KEY")
         
-        if not self.api_key:
+        if require_api_key and not self.api_key:
             raise ValueError("GEMINI_API_KEY not found in environment variables.")
         
-        genai.configure(api_key=self.api_key)
+        if self.api_key:
+            genai.configure(api_key=self.api_key)
         
         # Ensure model name starts with 'models/'
         self.target_model = self.model_name
@@ -172,6 +179,8 @@ class GeminiClient(BaseLLMClient):
         """
         Calls Gemini API and returns the generated text.
         """
+        if not self.api_key:
+            raise RuntimeError("GEMINI_API_KEY not found in environment variables.")
         try:
             model = genai.GenerativeModel(self.target_model)
             response = model.generate_content(prompt)
@@ -183,19 +192,21 @@ class OpenAIClient(BaseLLMClient):
     """
     Client for OpenAI API.
     """
-    def __init__(self, model_name="gpt-4o"):
+    def __init__(self, model_name="gpt-4o", require_api_key=True):
         self.model_name = model_name
         self.api_key = os.getenv("OPENAI_API_KEY")
         
-        if not self.api_key:
+        if require_api_key and not self.api_key:
             raise ValueError("OPENAI_API_KEY not found in environment variables.")
         
-        self.client = OpenAI(api_key=self.api_key)
+        self.client = OpenAI(api_key=self.api_key) if self.api_key else None
 
     def generate_text(self, prompt: str) -> str:
         """
         Calls OpenAI API and returns the generated text.
         """
+        if self.client is None:
+            raise RuntimeError("OPENAI_API_KEY not found in environment variables.")
         try:
             response = self.client.chat.completions.create(
                 model=self.model_name,
@@ -209,19 +220,21 @@ class AnthropicClient(BaseLLMClient):
     """
     Client for Anthropic (Claude) API.
     """
-    def __init__(self, model_name="claude-3-5-sonnet-20240620"):
+    def __init__(self, model_name="claude-3-5-sonnet-20240620", require_api_key=True):
         self.model_name = model_name
         self.api_key = os.getenv("ANTHROPIC_API_KEY")
         
-        if not self.api_key:
+        if require_api_key and not self.api_key:
             raise ValueError("ANTHROPIC_API_KEY not found in environment variables.")
         
-        self.client = anthropic.Anthropic(api_key=self.api_key)
+        self.client = anthropic.Anthropic(api_key=self.api_key) if self.api_key else None
 
     def generate_text(self, prompt: str) -> str:
         """
         Calls Anthropic API and returns the generated text.
         """
+        if self.client is None:
+            raise RuntimeError("ANTHROPIC_API_KEY not found in environment variables.")
         try:
             message = self.client.messages.create(
                 model=self.model_name,
@@ -237,7 +250,7 @@ class DummyClient(BaseLLMClient):
     Dummy client for testing purposes.
     Does not require any API keys.
     """
-    def __init__(self, model_name="dummy-model"):
+    def __init__(self, model_name="dummy-model", require_api_key=True):
         self.model_name = model_name
 
     def generate_text(self, prompt: str) -> str:

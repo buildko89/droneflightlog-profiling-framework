@@ -6,23 +6,13 @@ import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
 
-from drone_app.analyzer import TelemetryAnalyzer
-from drone_app.csv_loader import CsvTelemetryLoader
-from drone_app.interpreter import LLMInterpreter
-from drone_app.history_manager import FlightHistoryManager
-from drone_app.break_detector import StructuralBreakAnalyzer
 from drone_app.llm_clients import (
     SUPPORTED_LLM_TYPES,
-    create_llm_client,
     get_required_api_key_name,
     load_llm_config,
     resolve_llm_settings,
 )
-from drone_app.parser import UlgParser
-from drone_app.visualizer import TelemetryVisualizer
-from profilecore.core.context import ProfileCoreContext
-from profilecore.core.quality import build_data_quality_summary
-from profilecore.io.exporter import ReportExporter
+from drone_app.pipeline import run_analysis_pipeline
 
 
 WORKSPACE_DIR = "workspace"
@@ -33,37 +23,12 @@ LLM_CONFIG_PATH = "llm_config.json"
 CSV_CONFIG_PATH = "csv_mapping.json"
 
 
-def validate_api_key(llm_type):
+def validate_api_key(llm_type, mode="api"):
+    if mode == "export":
+        return
     env_key = get_required_api_key_name(llm_type)
     if env_key and not os.getenv(env_key):
         raise ValueError(f"環境変数 {env_key} が設定されていません。")
-
-
-def build_summary_insights(context, pca_variance):
-    insights = []
-    if pca_variance is not None:
-        cumulative = float(pca_variance["Explained_Variance_Ratio"].sum())
-        insights.append({
-            "level": "info",
-            "message": f"PCA cumulative explained variance: {cumulative:.1%}",
-        })
-
-    anomalies = context.get_data("anomaly_timestamps")
-    if anomalies:
-        detected = {pc: times for pc, times in anomalies.items() if times}
-        if detected:
-            for pc, times in detected.items():
-                insights.append({
-                    "level": "warning",
-                    "message": f"{pc} anomaly spikes detected at {', '.join(times[:5])}",
-                })
-        else:
-            insights.append({
-                "level": "info",
-                "message": "No PCA anomaly spikes were detected.",
-            })
-
-    return insights
 
 
 def write_uploaded_file(uploaded_file):
@@ -73,113 +38,29 @@ def write_uploaded_file(uploaded_file):
         return temp_file.name
 
 
-def run_ui_analysis(file_path, llm_type, model_name, status=None):
-    os.makedirs(WORKSPACE_DIR, exist_ok=True)
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-
-    context = ProfileCoreContext(workspace_dir=WORKSPACE_DIR)
-    context.add_log("Streamlit pipeline started.")
-
-    if status:
-        status.write("データパース中...")
-    if file_path.lower().endswith(".csv"):
-        csv_config_path = CSV_CONFIG_PATH if os.path.exists(CSV_CONFIG_PATH) else None
-        loader = CsvTelemetryLoader(file_path, config_path=csv_config_path)
-        context.add_log(f"Reading CSV file: {file_path}")
-        df = loader.load()
-        context.set_artifact("csv_parse_report", loader.get_parse_report())
-    else:
-        parser_obj = UlgParser(file_path)
-        context.add_log(f"Parsing ULog file: {file_path}")
-        df = parser_obj.parse(resample_rate="100ms")
-        context.set_artifact("ulg_parse_report", parser_obj.get_parse_report())
-    context.set_data("raw_data", df)
-    context.set_artifact("data_quality", build_data_quality_summary(df))
-    context.add_log(f"Parsed {len(df)} samples into context with key 'raw_data'")
-
-    csv_path = os.path.join(WORKSPACE_DIR, "telemetry_data.csv")
-    df.to_csv(csv_path)
-    context.add_log(f"Raw data saved to: {csv_path}")
-
-    if status:
-        status.write("PCA分析中...")
-    analyzer = TelemetryAnalyzer(context)
-    analyzer.analyze(data_key="raw_data", n_components=3)
-
-    pca_variance = context.get_data("pca_variance")
-    if pca_variance is not None:
-        context.set_artifact("feature_extraction_status", {
-            "status": "completed",
-            "method": "telemetry_pca",
-            "n_components": int(len(pca_variance)),
-        })
-    else:
-        context.set_artifact("feature_extraction_status", {
-            "status": "skipped",
-            "reason": "PCA results were not generated",
-        })
-
-    context.set_artifact("summary_insights", build_summary_insights(context, pca_variance))
-
-    if status:
-        status.write("グラフ生成中...")
-    visualizer = TelemetryVisualizer(context, output_dir=OUTPUT_DIR)
-    visualizer.plot_raw_telemetry(filename="raw_telemetry.png")
-    visualizer.plot_pca_results(filename="pca_plot.png")
-    visualizer.plot_variance(filename="pca_variance.png")
-    context.add_log("Visualizations generated and saved to 'output/' folder.")
-
-    if status:
-        status.write("履歴の記録と経年劣化の検知中...")
-    
-    # 履歴の記録と経年劣化の検知
-    FlightHistoryManager(context).update_history()
-    StructuralBreakAnalyzer(context).detect_breaks()
-
-    if status:
-        status.write("AI診断文生成中...")
-        
-    # LLMの設定解決
+def run_ui_analysis(file_path, llm_type, model_name, mode="api", anomaly_z_threshold=3.0, status=None):
     llm_settings = resolve_llm_settings(
         service=llm_type,
         model_name=model_name or None,
         config_path=LLM_CONFIG_PATH,
+        mode=mode,
     )
-    context.set_setting('llm_mode', llm_settings["mode"])
-
-    validate_api_key(llm_type)
-    client = create_llm_client(
-        service=llm_type,
-        model_name=model_name or None,
-        config_path=None,
+    validate_api_key(llm_settings["service"], llm_settings["mode"])
+    csv_config_path = CSV_CONFIG_PATH if os.path.exists(CSV_CONFIG_PATH) else None
+    return run_analysis_pipeline(
+        file_path,
+        llm_type=llm_settings["service"],
+        model_name=llm_settings["model"],
+        llm_config_path=LLM_CONFIG_PATH,
+        csv_config_path=csv_config_path,
+        mode=llm_settings["mode"],
+        workspace_dir=WORKSPACE_DIR,
+        output_dir=OUTPUT_DIR,
+        diagnosis_filename=DIAGNOSIS_FILENAME,
+        report_filename=REPORT_FILENAME,
+        anomaly_z_threshold=anomaly_z_threshold,
+        status_callback=status.write if status else None,
     )
-    diagnosis_path = os.path.join(OUTPUT_DIR, DIAGNOSIS_FILENAME)
-    interpreter = LLMInterpreter(context, llm_client=client)
-    if not interpreter.run_interpretation(output_file=diagnosis_path):
-        raise RuntimeError("LLM診断の実行に失敗しました。")
-
-    context.set_artifact("llm_interpretation", {
-        "status": "completed",
-        "client": llm_type,
-        "model": client.model_name,
-        "output_file": diagnosis_path,
-    })
-
-    if status:
-        status.write("Markdownレポート出力中...")
-    exporter = ReportExporter(context, output_dir=OUTPUT_DIR)
-    exporter.export_markdown(filename=REPORT_FILENAME)
-    context.add_log("Final report generated.")
-
-    return {
-        "context": context,
-        "csv_path": csv_path,
-        "diagnosis_path": diagnosis_path,
-        "report_path": os.path.join(OUTPUT_DIR, REPORT_FILENAME),
-        "raw_telemetry_path": os.path.join(OUTPUT_DIR, "raw_telemetry.png"),
-        "pca_plot_path": os.path.join(OUTPUT_DIR, "pca_plot.png"),
-        "pca_variance_path": os.path.join(OUTPUT_DIR, "pca_variance.png"),
-    }
 
 
 def render_markdown_file(path):
@@ -385,6 +266,9 @@ def main():
         default_llm_type = "gemini"
     default_llm_index = list(SUPPORTED_LLM_TYPES).index(default_llm_type)
     default_model_name = llm_config.get("model", "")
+    default_mode = llm_config.get("mode", "api")
+    if default_mode not in ("api", "export"):
+        default_mode = "api"
 
     st.sidebar.title("profilecore 解析設定")
     llm_type = st.sidebar.selectbox(
@@ -400,11 +284,29 @@ def main():
         help="空欄の場合はクライアントのデフォルト値を使用します。",
         key=f"model_name_{llm_type}",
     ).strip()
+    mode = st.sidebar.radio(
+        "LLM連携モード",
+        options=["api", "export"],
+        index=["api", "export"].index(default_mode),
+        horizontal=True,
+        help="export はAPIを呼び出さず、診断用プロンプトをファイルに書き出します。",
+        key="sidebar_llm_mode",
+    )
+    anomaly_z_threshold = st.sidebar.number_input(
+        "異常検知Z-score閾値",
+        min_value=1.0,
+        max_value=10.0,
+        value=3.0,
+        step=0.1,
+        key="anomaly_z_threshold",
+    )
 
     if llm_config:
         st.sidebar.caption(f"設定ファイル: {LLM_CONFIG_PATH}")
 
-    if llm_type == "dummy":
+    if mode == "export":
+        st.sidebar.info("export はAPIキーなしでプロンプトを書き出します。")
+    elif llm_type == "dummy":
         st.sidebar.info("dummy はAPIキーなしで動作確認できます。")
 
     st.title("profilecore - ドローンフライトログ AI×統計解析ダッシュボード")
@@ -432,7 +334,14 @@ def main():
         try:
             temp_file_path = write_uploaded_file(uploaded_file)
             with st.status("解析を実行しています...", expanded=True) as status:
-                results = run_ui_analysis(temp_file_path, llm_type, model_name, status=status)
+                results = run_ui_analysis(
+                    temp_file_path,
+                    llm_type,
+                    model_name,
+                    mode=mode,
+                    anomaly_z_threshold=anomaly_z_threshold,
+                    status=status,
+                )
                 status.update(label="解析が完了しました。", state="complete")
 
             st.session_state.analysis_results = results

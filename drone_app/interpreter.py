@@ -24,6 +24,8 @@ class LLMInterpreter(AnalysisModule):
         pca_scores = self.context.get_data('pca_scores')
         pca_loadings = self.context.get_data('pca_loadings')
         anomaly_timestamps = self.context.get_data('anomaly_timestamps')
+        pca_preprocessing = self.context.get_artifact('pca_preprocessing_report')
+        anomaly_config = self.context.get_artifact('anomaly_detection_config')
 
         # 新たに structural_break と flight_history をContextから取得する（存在する場合）
         structural_break = self.context.get_data('structural_break')
@@ -39,6 +41,8 @@ class LLMInterpreter(AnalysisModule):
         # Add history-related data to stats summary
         stats_summary['structural_break'] = structural_break
         stats_summary['flight_history'] = flight_history
+        stats_summary['pca_preprocessing'] = pca_preprocessing
+        stats_summary['anomaly_config'] = anomaly_config
 
         # 3. Create prompt
         prompt = self._create_prompt(stats_summary)
@@ -135,7 +139,11 @@ claude "Read {prompt_file} and generate a detailed flight diagnosis report based
                 top_3 = pc_loadings.abs().sort_values(ascending=False).head(3)
                 for feat, _ in top_3.items():
                     val = pc_loadings[feat]
-                    top_features.append({'feature': feat, 'loading': val})
+                    top_features.append({
+                        'feature': feat,
+                        'loading': val,
+                        'description': self._describe_feature(feat),
+                    })
 
             score_stats[col] = {
                 'mean': series.mean(),
@@ -164,12 +172,40 @@ claude "Read {prompt_file} and generate a detailed flight diagnosis report based
 1. 寄与率（Explained Variance Ratio）:
 {stats['explained_variance']}
 
+### 解析時の前提と注意
+- 入力はPX4 ULogまたはテレメトリCSV由来の時系列データです。列名に単位が含まれる場合がありますが、CSVマッピングやログ設定により意味が変わる可能性があります。
+- PX4系の代表的な座標は機体座標系またはNED座標系で表現されることがあります。列名だけで座標系を断定しないでください。
+- PCAの主成分は統計的な合成軸であり、主成分名だけで故障や物理現象を確定しないでください。ローディング上位特徴量と元系列確認を前提に、可能性として表現してください。
+- 異常スパイクはPCAスコアのZ-scoreしきい値による検出です。瞬間的な操作、飛行フェーズ遷移、ログ欠損補完、センサー外乱でも発生し得ます。
+
+"""
+        preprocessing = stats.get('pca_preprocessing')
+        if preprocessing:
+            prompt += "### PCA前処理情報\n"
+            prompt += f"- PCA投入列数: {preprocessing.get('selected_column_count')}\n"
+            prompt += f"- 要求主成分数/実効主成分数: {preprocessing.get('requested_n_components')} / {preprocessing.get('effective_n_components')}\n"
+            prompt += f"- 除外された全NaN列数: {len(preprocessing.get('all_nan_columns', []))}\n"
+            prompt += f"- 除外された定数列数: {len(preprocessing.get('constant_columns', []))}\n"
+            if preprocessing.get('component_adjustment_reason'):
+                prompt += f"- 主成分数調整理由: {preprocessing.get('component_adjustment_reason')}\n"
+
+        anomaly_config = stats.get('anomaly_config')
+        if anomaly_config:
+            prompt += "\n### 異常検知設定\n"
+            prompt += f"- 方法: {anomaly_config.get('method')}\n"
+            prompt += f"- Z-score閾値: {anomaly_config.get('z_threshold')}\n"
+            prompt += f"- 判定条件: {anomaly_config.get('comparison')}\n"
+
+        prompt += """
 2. 主成分スコアの基本統計量:
 """
         for pc, s in stats['score_stats'].items():
             prompt += f"- {pc}:\n"
             if s['top_features']:
-                feats_str = ", ".join([f"{f['feature']} ({f['loading']:.4f})" for f in s['top_features']])
+                feats_str = ", ".join([
+                    f"{f['feature']} ({f['loading']:.4f}; {f['description']})"
+                    for f in s['top_features']
+                ])
                 prompt += f"  - 主要な構成要素（ローディング上位3つ）: [{feats_str}]\n"
             
             # Add anomaly timestamps
@@ -208,9 +244,16 @@ claude "Read {prompt_file} and generate a detailed flight diagnosis report based
                 )
                 for col in structural_break.get('detected_columns', []):
                     details = structural_break.get('break_details', {}).get(col, {})
+                    recent_values = details.get('recent_values')
+                    if recent_values:
+                        recent_values_text = ", ".join([f"{value:.4f}" for value in recent_values])
+                    else:
+                        recent_values_text = f"{details.get('prev_value', 0.0):.4f}, {details.get('last_value', 0.0):.4f}"
+                    config = structural_break.get('config', {})
+                    sigma = config.get('threshold_sigma', 2.0)
                     break_warning_info += (
-                        f"- {col}: 直近2フライトの値 ({details.get('prev_value', 0.0):.4f}, {details.get('last_value', 0.0):.4f}) が、"
-                        f"閾値 {details.get('threshold', 0.0):.4f}（過去平均 {details.get('mean', 0.0):.4f} + 2標準偏差 {2 * details.get('std', 0.0):.4f}）を連続して超えました。\n"
+                        f"- {col}: 直近フライト群の値 ({recent_values_text}) が、"
+                        f"閾値 {details.get('threshold', 0.0):.4f}（過去平均 {details.get('mean', 0.0):.4f} + {sigma}標準偏差）を連続して超えました。\n"
                     )
                 break_warning_info += f"変化検出フライト日時: {structural_break.get('timestamp', 'N/A')}\n"
             elif structural_break.get('status') == 'skipped':
@@ -226,7 +269,7 @@ claude "Read {prompt_file} and generate a detailed flight diagnosis report based
 - 各主成分（PC1, PC2...）の「主要な構成要素」に着目し、PC1などの抽象的な言葉だけでなく、構成要素のセンサー名を挙げて具体的な物理現象（例：「PC1はZ軸加速度とピッチ角の変動を強く反映しており、高度維持の不安定さを示唆している」など）として解説してください。
 - 特定の時刻に異常なスパイクが検出されている場合は、そのタイミングでドローンにどのような物理的衝撃や操作が行われたと推測されるか、時刻を明記して考察してください。
 - 主成分スコアの変動（標準偏差の大きさやトレンド）が具体的にどのセンサー群のどのような振る舞いを意味している可能性があるか考察してください。
-- 異常が疑われる場合はその旨を指摘してください。
+- 異常が疑われる場合はその旨を指摘しつつ、確定診断ではなく、元系列グラフ・該当時刻前後・機体ログイベントの確認が必要であることを明記してください。
 """
 
         # 構造的変化がある場合、予知保全のアドバイスを要求
@@ -240,3 +283,26 @@ claude "Read {prompt_file} and generate a detailed flight diagnosis report based
         prompt += """- 解説は丁寧な日本語で行ってください。
 """
         return prompt
+
+    def _describe_feature(self, feature):
+        lowered = str(feature).lower()
+        descriptions = []
+        if "accelerometer" in lowered or "accel" in lowered:
+            descriptions.append("加速度。列名にm_s2があればm/s^2相当")
+        if "gyro" in lowered or "angular_velocity" in lowered:
+            descriptions.append("角速度。rad/s系の可能性")
+        if "actuator_outputs" in lowered or "output[" in lowered:
+            descriptions.append("アクチュエータまたはモーター出力")
+        if "vehicle_attitude" in lowered:
+            descriptions.append("機体姿勢。クォータニオンまたは姿勢関連値")
+        if "local_position" in lowered:
+            descriptions.append("ローカル位置/速度。PX4ではNED系の可能性")
+        if "global_position" in lowered or "gps" in lowered:
+            descriptions.append("GPSまたはグローバル位置情報")
+        if "manual_control" in lowered or "input_rc" in lowered:
+            descriptions.append("操縦入力またはRC入力")
+        if "setpoint" in lowered:
+            descriptions.append("制御目標値")
+        if not descriptions:
+            descriptions.append("列名から用途を明確に断定できない特徴量")
+        return "; ".join(descriptions)
