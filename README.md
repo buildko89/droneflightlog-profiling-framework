@@ -1,71 +1,106 @@
-# ドローン・フライトログ解析パイプライン
+# Drone Flight Log Profiling Framework
 
-PX4 ドローンのフライトログ（`.ulg`）およびテレメトリCSVを解析する PoC プロジェクトです。
+PX4 ドローンのフライトログ、テレメトリ CSV、動画ファイルを解析する Python ベースの PoC フレームワークです。
 
-`.ulg` ファイルまたはCSVファイルからテレメトリデータを抽出し、PCA による統計解析、グラフ生成、LLM による日本語診断、Markdown レポート出力を行います。CLI 実行に加えて、Streamlit によるブラウザ UI からも解析できます。
+主な用途は、フライトログの統計解析、PCA による異常スパイク検出、複数フライト履歴による構造的変化検知、LLM による日本語診断、動画との照合、動画単体解析です。CLI と Streamlit UI の両方から利用できます。
 
-## 主な機能
+## できること
 
-- `.ulg` ファイルからテレメトリトピックを抽出
-- CSVファイルを標準テレメトリDataFrameへ正規化
-- ULogの代替トピック解決、複数インスタンス取得、共通時刻グリッド同期
-- 低頻度・単発トピックを全期間へ広げない限定補完
-- CSVのtimestamp推定、列名マッピング、数値列検証
+- PX4 `.ulg` ログの読み込み
+- テレメトリ CSV の読み込みと列名マッピング
+- ULog トピックの代替解決、複数インスタンス取得、共通時刻グリッド同期
 - PCA による主成分スコア、寄与率、主成分負荷量の算出
-- Z-score による PCA スコアのスパイク時刻検出
-- 生テレメトリ、PCA スコア、寄与率の PNG グラフ生成
-- Gemini / OpenAI / Anthropic / dummy クライアントによる診断文生成
-- `profilecore` の `ProfileCoreContext` と `drone_app.report_exporter.DroneReportExporter` を使った Markdown レポート出力
-- `ULog Parse Report` / `CSV Parse Report` による読み込み品質の可視化
-- Streamlit Web UI によるアップロード、解析実行、LLMモード選択、4タブ結果表示
-- `llm_config.json` による LLM サービス・モデル・連携モード指定
-- CLI / Web UI 共通の `run_analysis_pipeline` による一貫した解析フロー
-- run 単位の成果物ディレクトリ (`output/runs/YYYYMMDD_HHMMSS_<logname>/`)
-- 複数フライトにまたがる「経年劣化（構造的変化）」の自動検知と入力ファイル識別子付き履歴追記管理（CSV保存）
-- 経年劣化（構造的変化）検知時のLLMプロンプト警告注入と長期予知保全アドバイスの自動要求
+- Z-score による PCA スコアスパイク検出
+- ログ側フライトフェーズ推定
+- 生テレメトリ、PCA スコア、寄与率のグラフ出力
+- 複数フライト履歴の蓄積
+- 経年劣化・構造的変化の検知
+- Gemini / OpenAI / Anthropic / dummy による LLM 診断
+- API を呼ばないプロンプト export モード
+- Claude Code / Codex / Agy などのローカルエージェント連携
+- 動画付きログ解析
+- 動画単体解析
+- Markdown レポート出力
+- Streamlit Web UI
 
-## プロジェクト構成
+## 解析モード
+
+このリポジトリには大きく 3 つの解析モードがあります。
+
+| モード | 入力 | エントリポイント | 主な出力 |
+| --- | --- | --- | --- |
+| ログ解析 | `.ulg` または `.csv` | `main.py` / `dronelog_uiapps.py` | `drone_analysis_report.md` |
+| 動画付きログ解析 | `.ulg` / `.csv` + 動画 | `main.py` / `dronelog_uiapps.py` | ログ解析レポート + 動画照合 |
+| 動画単体解析 | 動画のみ | `video_main.py` / `video_uiapps.py` | `video_analysis_report.md` |
+
+## 設計方針
+
+動画とログは混ぜて PCA に投入しません。
 
 ```text
-drone_poc/
-├── main.py                    # CLI エントリポイント
-├── dronelog_uiapps.py         # Streamlit Web UI
-├── csv_mapping.example.json   # CSV列名マッピング設定例
-├── llm_config.json            # 既定の LLM 設定
-├── llm_config.dummy.json      # APIキー不要の検証用 LLM 設定
+ログ解析
+  -> PCA / 異常検知 / フライトフェーズ / 経年劣化
+
+動画解析
+  -> メタデータ / brightness / blur / motion / video events
+
+最後に照合
+  -> Match / Partial Match / Contradiction / No Coverage
+```
+
+動画がログ全体の一部しか覆わない場合、動画範囲外のログ異常には `動画による裏付けなし` と明示します。
+
+## ディレクトリ構成
+
+```text
+.
+├── main.py                         # ログ解析 CLI
+├── video_main.py                   # 動画単体解析 CLI
+├── dronelog_uiapps.py              # ログ解析 Streamlit UI
+├── video_uiapps.py                 # 動画単体解析 Streamlit UI
+├── video_log_analysis_usage.md     # 動画+ログ解析の詳しい利用手順
+├── llm_config.json                 # 既定 LLM 設定
+├── llm_config.dummy.json           # API キー不要の検証用設定
 ├── requirements.txt
 ├── drone_app/
-│   ├── parser.py              # .ulg から DataFrame への変換・同期
-│   ├── csv_loader.py          # CSV から DataFrame への変換・正規化
-│   ├── analyzer.py            # PCA と異常時刻検出
-│   ├── visualizer.py          # PNG グラフ生成
-│   ├── interpreter.py         # LLM 診断文生成
-│   ├── history_manager.py     # フライトごとの統計履歴追記 (FlightHistoryManager)
-│   ├── break_detector.py      # 複数フライト経年劣化検知 (StructuralBreakAnalyzer)
-│   ├── pipeline.py            # CLI / Web UI 共通解析パイプライン
-│   ├── report_exporter.py     # ドローン固有セクション付き Markdown レポート
-│   └── llm_clients.py         # LLM クライアントと JSON 設定読み込み
-├── profilecore/               # 解析基盤ライブラリ
-├── tests/                     # 回帰テスト
-├── workspace/                 # CSV などの中間成果物
-└── output/                    # グラフ、診断、レポート
+│   ├── parser.py                   # ULog 読み込み
+│   ├── csv_loader.py               # CSV 読み込み
+│   ├── analyzer.py                 # PCA / 異常検知
+│   ├── flight_phase_analyzer.py    # ログ側フライトフェーズ推定
+│   ├── video_analyzer.py           # 動画特徴量 / 動画イベント
+│   ├── pipeline.py                 # ログ解析 pipeline
+│   ├── video_pipeline.py           # 動画単体 pipeline
+│   ├── report_exporter.py          # ログ解析 Markdown exporter
+│   ├── video_report_exporter.py    # 動画単体 Markdown exporter
+│   ├── interpreter.py              # ログ解析 LLM 診断
+│   ├── video_interpreter.py        # 動画単体 LLM 診断
+│   ├── llm_clients.py              # LLM クライアント
+│   ├── visualizer.py               # グラフ生成
+│   ├── history_manager.py          # フライト履歴
+│   └── break_detector.py           # 構造的変化検知
+├── profilecore/                    # 汎用解析基盤
+├── tests/                          # テスト
+├── workspace/                      # 中間ファイル
+└── output/                         # 解析成果物
 ```
 
 ## セットアップ
 
-### 1. 依存関係
+### 1. Python
 
-Python 3.8 以上を想定しています。
+Python 3.12 で動作確認しています。
+
+### 2. 依存関係
 
 ```powershell
 python -m pip install -r requirements.txt
 ```
 
-依存関係は `>=,<次メジャー` 形式で指定しています。再現性を保ちつつ、パッチ・マイナー更新を許容する方針です。
+動画解析では `opencv-python-headless` を使います。未インストールでもパイプラインは停止せず、動画解析だけ `skipped` としてレポートされます。
 
-### 2. APIキー
+### 3. API キー
 
-LLM API を使う場合は、プロジェクト直下の `.env` に必要なキーを設定します。
+クラウド LLM API を使う場合は `.env` に設定します。
 
 ```text
 GEMINI_API_KEY=your_key
@@ -73,11 +108,11 @@ OPENAI_API_KEY=your_key
 ANTHROPIC_API_KEY=your_key
 ```
 
-`dummy` を使う場合は API キー不要です。
+`dummy` または `mode=export` を使う場合、API キーは不要です。
 
-## LLM設定
+## LLM 設定
 
-利用する LLM サービス、モデル、および連携モードは `llm_config.json` で指定できます。
+`llm_config.json` で LLM サービス、モデル、実行モードを指定できます。
 
 ```json
 {
@@ -87,168 +122,223 @@ ANTHROPIC_API_KEY=your_key
 }
 ```
 
-### 設定項目:
+| 項目 | 値 | 説明 |
+| --- | --- | --- |
+| `service` | `gemini` / `openai` / `anthropic` / `dummy` | 使用する LLM |
+| `model` | モデル名 | UI ではプルダウン候補として表示 |
+| `mode` | `api` / `export` | API 呼び出しまたはプロンプト書き出し |
 
-- **`service`**: 利用するLLMサービス。`gemini`, `openai`, `anthropic`, `dummy` から指定します。
-- **`model`**: 利用するモデル名。省略または空欄の場合、各サービスのデフォルトモデルが使用されます。
-- **`mode`**: LLM連携および評価の実行モードを指定します。
-  - **`api`** (デフォルト): 直接クラウドLLM APIを呼び出し、自動で診断文を生成して run 出力ディレクトリの `diagnosis_<model>.md` に書き出します。
-  - **`export`**: クラウドAPIを呼び出さず、診断用プロンプトを `workspace/llm_prompt.txt` にエクスポートします。出力ファイルには、ローカルエージェントツール等でこのプロンプトを実行するための手順とコマンド例（プレースホルダー）が保存されます。export mode では API キーなしでプロンプトを書き出せます。
+`export` は API を呼ばず、ローカルエージェント用のプロンプトを `workspace/` に出力します。
 
-ネスト形式も利用できます。
+## ログ解析 CLI
 
-```json
-{
-  "llm": {
-    "service": "dummy",
-    "model": "dummy-model",
-    "mode": "export"
-  }
-}
-```
-
-優先順位は次の通りです。
-
-1. CLI 引数または Web UI の画面入力
-2. `llm_config.json`
-3. クライアントの組み込みデフォルト
-
-API キーなしで API モードのパイプラインを検証する場合は `llm_config.dummy.json` を使います。Gemini / OpenAI / Anthropic を選んで API キーなしでプロンプトだけを書き出したい場合は `mode=export` を指定します。
-
-## CLIで実行
-
-基本形式:
+基本形:
 
 ```powershell
-python .\main.py <ulg_or_csv_file_path> [options]
+python .\main.py <flight_log.ulg または telemetry.csv>
 ```
 
-主なオプション:
-
-- `--llm`: 使用する LLM サービス。`gemini`, `openai`, `anthropic`, `dummy` から選択
-- `--model`, `-m`: 使用するモデル名
-- `--mode`: LLM評価モード。`api` (直接APIコール) または `export` (プロンプトファイル書出) から選択
-- `--llm-config`: LLM 設定 JSON のパス。既定値は `llm_config.json`
-- `--csv-config`: CSVのtimestamp列や列名マッピングを指定するJSONファイル
-- `--anomaly-z-threshold`: PCAスコア異常検知のZ-score閾値。既定値は `3.0`
-- `--break-min-history`: 経年劣化検知に必要な最低履歴数。既定値は `5`
-- `--break-threshold-sigma`: 構造的変化検知の閾値倍率。既定値は `2.0`
-- `--flat-output`: `output/runs/...` ではなく `output/` 直下へ成果物を出力
-
-実行例:
+例:
 
 ```powershell
-# llm_config.json の設定で実行 (デフォルトは API モード)
-python .\main.py .\log_7_2026-3-10-10-46-34.ulg
-
-# プロンプトエクスポートモードで実行 (APIを呼び出さずローカル評価用プロンプトを書き出し)
-python .\main.py .\log_7_2026-3-10-10-46-34.ulg --mode export
-
-# APIキー不要の dummy 設定で実行
-python .\main.py .\log_7_2026-3-10-10-46-34.ulg --llm-config .\llm_config.dummy.json
-
-# CLI引数で LLM サービスを上書き
 python .\main.py .\log_7_2026-3-10-10-46-34.ulg --llm dummy
-
-# Anthropic のモデルを明示指定
-python .\main.py .\log_7_2026-3-10-10-46-34.ulg --llm anthropic --model claude-3-haiku-20240307
-
-# CSVを列名マッピング付きで実行
-python .\main.py .\telemetry.csv --csv-config .\csv_mapping.example.json --llm dummy
 ```
 
-CLI では LLM 診断結果をモデル名付きで出力します。
+CSV:
+
+```powershell
+python .\main.py .\telemetry.csv --llm dummy
+```
+
+CSV マッピング付き:
+
+```powershell
+python .\main.py .\telemetry.csv --csv-config .\csv_mapping.json --llm dummy
+```
+
+API を呼ばずにプロンプトだけ出す:
+
+```powershell
+python .\main.py .\flight.ulg --mode export
+```
+
+### ログ解析 CLI オプション
+
+| オプション | 説明 |
+| --- | --- |
+| `FILE` | `.ulg` または `.csv` |
+| `--llm` | `gemini` / `openai` / `anthropic` / `dummy` |
+| `--model`, `-m` | モデル名 |
+| `--llm-config` | LLM 設定 JSON |
+| `--csv-config` | CSV マッピング JSON |
+| `--mode` | `api` / `export` |
+| `--anomaly-z-threshold` | PCA 異常検知 Z-score 閾値 |
+| `--break-min-history` | 構造的変化検知に必要な最低履歴数 |
+| `--break-threshold-sigma` | 構造的変化検知の閾値倍率 |
+| `--flat-output` | `output/runs/...` ではなく `output/` 直下へ出力 |
+
+## 動画付きログ解析 CLI
+
+ログ解析に動画を追加して、ログ異常と動画イベントを照合します。
+
+```powershell
+python .\main.py .\flight.ulg `
+  --llm dummy `
+  --video .\flight_video.mp4 `
+  --video-offset-s 1200 `
+  --camera-viewpoint external `
+  --video-alignment-confidence 0.7
+```
+
+1 行で書く場合:
+
+```powershell
+python .\main.py .\flight.ulg --llm dummy --video .\flight_video.mp4 --video-offset-s 1200 --camera-viewpoint external --video-alignment-confidence 0.7
+```
+
+### 動画付きログ解析オプション
+
+| オプション | 説明 |
+| --- | --- |
+| `--video` | 照合する動画ファイル |
+| `--video-offset-s` | `telemetry_time_s = video_time_s + offset` の offset 秒 |
+| `--camera-viewpoint` | `external` または `onboard` |
+| `--video-alignment-confidence` | 動画とログの同期信頼度。0.0 から 1.0 |
+
+### カメラ視点
+
+| 値 | 意味 |
+| --- | --- |
+| `external` | 地上や手持ちカメラから撮影。画面ブレを機体ブレと断定しない |
+| `onboard` | 機体搭載カメラ。映像の揺れを機体挙動の補助情報として扱いやすい |
+
+### オフセットの決め方
 
 ```text
-output/runs/YYYYMMDD_HHMMSS_<logname>/diagnosis_<model>.md
+video_offset_s = telemetry_event_time_s - video_event_time_s
 ```
 
-`--flat-output` を指定した場合は従来どおり `output/diagnosis_<model>.md` に出力します。
+例:
 
-## 入力処理
-
-このプロジェクトでは、入力形式ごとに専用の読み込み層を使い、後段のPCA・可視化・LLM診断には `pandas.DataFrame` として渡します。
+- ログ上の離陸開始: 1230 秒
+- 動画上の離陸開始: 30 秒
 
 ```text
-.ulg
-  -> UlgParser
-  -> 共通時刻グリッドへ同期
-  -> raw_data
-  -> Analyzer / Visualizer / Report
-
-.csv
-  -> CsvTelemetryLoader
-  -> timestamp正規化・列名マッピング・数値列検証
-  -> raw_data
-  -> Analyzer / Visualizer / Report
+video_offset_s = 1230 - 30 = 1200
 ```
 
-### ULog入力
+## 動画単体解析 CLI
 
-`.ulg` 入力では `drone_app.parser.UlgParser` が以下を行います。
+動画ファイルだけを解析します。フライトログは不要です。
 
-- `DEFAULT_TOPICS` に基づく主要テレメトリトピックの抽出
-- `vehicle_global_position` が無い場合の `vehicle_gps_position` / `sensor_gps` への代替解決
-- `input_rc` が無い場合の `manual_control_setpoint` への代替解決
-- `estimator_states` など同名トピックの複数インスタンス取得
-- 全トピックを共通時刻グリッドへリサンプリング
-- `fill_strategy="bounded"` による限定的な前方補完
-- `ulg_parse_report` の生成
+```powershell
+python .\video_main.py .\flight_video.mp4 --camera-viewpoint external
+```
 
-`fill_strategy` は必要に応じて以下を使い分けられます。
+サンプリング間隔を指定:
 
-| 値 | 挙動 |
-|---|---|
-| `bounded` | デフォルト。実サンプル間隔に基づいて限定的に前方補完します。1サンプルだけのトピックは全期間へ補完しません。 |
-| `none` | 共通グリッドへ揃えるだけで補完しません。 |
-| `unbounded` | 従来相当の `ffill().bfill()` を行います。 |
+```powershell
+python .\video_main.py .\flight_video.mp4 --sample-interval-s 0.5
+```
 
-`ulg_parse_report` は最終Markdownの `ULog Parse Report` セクションに出力されます。
+AI 診断も生成:
 
-## Web UIで実行
+```powershell
+python .\video_main.py .\flight_video.mp4 --llm dummy
+```
 
-Streamlit アプリを起動します。
+API を呼ばずに動画診断プロンプトだけ出す:
+
+```powershell
+python .\video_main.py .\flight_video.mp4 --mode export --llm dummy
+```
+
+### 動画単体 CLI オプション
+
+| オプション | 説明 |
+| --- | --- |
+| `VIDEO` | 解析対象動画 |
+| `--camera-viewpoint` | `external` / `onboard` |
+| `--sample-interval-s` | フレームサンプリング間隔秒 |
+| `--output-dir` | 出力先 |
+| `--workspace-dir` | 作業ディレクトリ |
+| `--flat-output` | run ディレクトリを作らず出力 |
+| `--llm` | LLM 種別 |
+| `--model`, `-m` | モデル名 |
+| `--mode` | `api` / `export` |
+| `--llm-config` | LLM 設定 JSON |
+
+動画単体解析ではログが無いため、PCA 異常、GPS、IMU、バッテリー異常は判定しません。
+
+## ログ解析 Web UI
+
+起動:
 
 ```powershell
 python -m streamlit run .\dronelog_uiapps.py
 ```
 
-ブラウザで表示された画面から `.ulg` または `.csv` ファイルをアップロードし、`解析実行 (Analyze)` を押します。
+画面でできること:
 
-Web UI の主な操作:
+- LLM タイプを選択
+- モデルをプルダウンで選択
+- `api` / `export` を選択
+- PCA 異常検知 Z-score 閾値を指定
+- 動画同期オフセットを指定
+- カメラ視点を指定
+- 動画同期信頼度を指定
+- `.ulg` / `.csv` をアップロード
+- 任意で動画をアップロード
+- 解析結果を 4 タブで確認
 
-- サイドバーで LLM タイプを選択
-- サイドバーでモデル名を任意指定
-- サイドバーで LLM連携モード (`api` / `export`) を選択
-- サイドバーで PCA 異常検知の Z-score 閾値を指定
-- `.ulg` または `.csv` ファイルをアップロード
-- 解析実行後、以下の4タブで結果を確認
-  - `AI診断結果`
-  - `統計ビジュアル`
-  - `詳細データ`
-  - `経年劣化と飛行履歴`
+結果タブ:
 
-Web UI は `st.session_state` で解析結果を保持します。タブ切り替えやサイドバー操作による Streamlit の再実行後も、アップロードファイルが維持されている限り結果表示は残ります。アップロードファイルをクリアすると、古い解析結果もクリアされます。
+- `AI診断結果`
+- `統計ビジュアル`
+- `詳細データ`
+- `経年劣化と飛行履歴`
 
-Web UI では診断結果を固定名で出力します。
+CSV マッピングを UI で使う場合は、プロジェクト直下に `csv_mapping.json` を置いてください。
 
-```text
-output/runs/YYYYMMDD_HHMMSS_<uploaded-log>/diagnosis.md
+## 動画単体 Web UI
+
+起動:
+
+```powershell
+python -m streamlit run .\video_uiapps.py
 ```
 
-CSVの列名マッピングを使う場合は、プロジェクト直下に `csv_mapping.json` を置くとWeb UIが自動で読み込みます。
+画面でできること:
 
-## CSV入力
+- 動画ファイルをアップロード
+- カメラ視点を選択
+- サンプリング間隔を指定
+- 任意で AI 診断を有効化
+- LLM タイプを選択
+- モデルをプルダウンで選択
+- `api` / `export` を選択
+- 動画特徴量、動画イベント、Markdown レポートを確認
 
-CSV入力では、`drone_app.csv_loader.CsvTelemetryLoader` が以下を行います。
+結果タブ:
 
-- timestamp列の自動推定
-- timestampを経過時間の `TimedeltaIndex` へ正規化
-- JSON設定による列名マッピング
-- 数値化できる文字列列の自動変換
-- 行数、数値列数、欠損、定数列、マッピング結果の `csv_parse_report` 生成
+- `Summary`
+- `Features`
+- `Events`
+- `Report`
 
-timestamp列の自動候補:
+## CSV 入力
+
+CSV は `CsvTelemetryLoader` で読み込みます。
+
+対応内容:
+
+- timestamp 列の自動推定
+- `TimedeltaIndex` への変換
+- JSON による列名マッピング
+- 数値列の自動変換
+- 欠損、定数列、マッピング結果のレポート
+
+timestamp 候補:
 
 - `timestamp`
 - `time`
@@ -259,9 +349,7 @@ timestamp列の自動候補:
 - `datetime`
 - `date_time`
 
-先頭列が `Unnamed: 0` の場合は、`DataFrame.to_csv()` で保存されたインデックス列とみなし、timestampとして優先的に扱います。timestamp列が見つからない場合は、行番号を秒として `TimedeltaIndex` を作ります。
-
-マッピング設定例:
+マッピング例:
 
 ```json
 {
@@ -274,156 +362,195 @@ timestamp列の自動候補:
 }
 ```
 
-`timestamp_unit` は `s`, `ms`, `us`, `ns` を指定できます。未指定時は列名から推定し、推定できない数値timestampは秒として扱います。
-
-CSVは列名やフォーマットが現場ごとに変わる前提です。標準的な列名へ寄せたい場合は、CLIでは `--csv-config` を指定し、Web UIではプロジェクト直下に `csv_mapping.json` を置いてください。
-
-`csv_parse_report` は最終Markdownの `CSV Parse Report` セクションに出力されます。
-
-## 経年劣化（構造的変化）検知と飛行履歴管理
-
-フライトごとに主要な統計量を記録・追記し、長期的な変化（経年劣化の兆候など）を自動検知する仕組みを搭載しています。
-
-### 動作フロー
-
-1. **フライト履歴の記録 (`FlightHistoryManager`)**:
-   解析実行時に、現在のフライトのPCAスコアから各PCの「分散 (Variance)」「トレンド (Trend)」「異常スパイク回数 (Anomaly count)」を計算し、`workspace/flight_history.csv` に実行日時（タイムスタンプ）をインデックスとして1行追加・保存します。履歴には `source_path`, `source_file_name`, `source_size_bytes`, `source_modified_time`, `source_sha256` も保存され、同一ログの再登録を検出できます。
-
-2. **構造的変化の検知 (`StructuralBreakAnalyzer`)**:
-   `flight_history.csv` に蓄積されたデータが **5フライト分以上** ある場合に判定が自動実行されます（5フライト未満の場合は「データ不足」としてスキップされます）。最低履歴数、直近判定数、閾値倍率はパイプライン引数で設定できます。
-   - 各PCの分散 (`PC*_variance`) カラムに対して、直近2フライトを除く過去データの「平均値 + 2標準偏差」を既定の閾値とします。
-   - 直近2フライトの分散値が連続してこの閾値を超過していた場合、「構造的変化（劣化の兆候）あり」として検知フラグを立て、変化検出日時とともに `structural_break` データとしてContextに保存します。
-
-3. **LLMプロンプトへの警告・指示の注入 (`LLMInterpreter`)**:
-   経年劣化や構造的変化が検知された場合、LLMへ送信されるプロンプトに以下の情報が自動的に注入されます。
-   - 過去のフライト数の推移履歴情報
-   - 構造的変化（経年劣化の兆候）が検知された旨の警告文と、詳細数値（過去平均、閾値、直近2フライトの変動値）
-   - モーターやローター等の摩耗を考慮した「長期的な予知保全の観点からの保守点検アドバイス」のLLMへの要求指示
-
-## ローカルエージェントを用いた評価手順（プロンプト・エクスポート）
-
-クラウドLLM API（有料接続）を使用せず、ローカル環境で動作する開発支援エージェント（Claude Code / Agy / Codex 等）を利用してドローンの飛行診断レポート（評価）を行う手順は以下の通りです。
-
-### ステップ 1: 解析パイプラインの実行（プロンプトのエクスポート）
-コマンドライン引数で `--mode export` を指定してパイプラインを実行します。
+CLI では `--csv-config` を指定します。
 
 ```powershell
-python .\main.py <解析対象フライトログファイル.ulg> --mode export
+python .\main.py .\telemetry.csv --csv-config .\csv_mapping.json --llm dummy
 ```
 
-これにより、APIを呼び出さずに、今回の解析データ（PCA統計、Z-scoreスパイク、過去の経年劣化判定結果などを含む）から構築された最終プロンプトがファイルにエクスポートされます。
-
-- **エクスポートされたプロンプトファイル**: `workspace/llm_prompt.txt`
-- **手順書付きプレースホルダーファイル**: `output/runs/YYYYMMDD_HHMMSS_<logname>/diagnosis_<使用モデル名>.md`
-
-### ステップ 2: ローカルエージェントによる診断レポートの生成
-
-エクスポートされたプロンプトテキストを、普段ご利用のローカルAIエージェントに読み込ませて診断を実行します。
-
-#### 例A: Claude Code (Anthropic CLI) を使用する場合
-ターミナル上で `claude` コマンドを使用し、以下のように指示を出します。
-
-```bash
-claude "workspace/llm_prompt.txt を読み取り、その指示に従ってドローンの詳細な飛行診断・予知保全レポートを作成し、該当run出力ディレクトリの diagnosis_claude.md に保存してください。"
-```
-
-Claude Codeが指示内容とデータを理解し、ローカル環境で自動的に適切な Markdown レポートを書き出します。
-
-#### 例B: Agy (Antigravity CLI) を使用する場合
-Agyの自律型タスクランナーを使用し、診断レポートの出力を依頼します。
-
-```bash
-agy run "workspace/llm_prompt.txt に基づいて、フライトログの評価診断レポートを日本語で該当run出力ディレクトリの diagnosis_agy.md に作成せよ。"
-```
-
-#### 例C: Codex (Desktop App / CLI) を使用する場合
-Codexのチャットあるいはタスク実行コンソールを開き、次のプロンプトを入力してファイルを生成させます。
-
-> 「`workspace/llm_prompt.txt` の内容を読み込んでドローン飛行解析の評価をまとめ、該当run出力ディレクトリの `diagnosis_codex.md` にMarkdownファイルとして保存してください。」
-
-### ステップ 3: 最終レポートの確認
-エージェントによって診断結果が保存されたら、通常のパイプライン出力と組み合わせて run 出力ディレクトリ内の `drone_analysis_report.md` 等の最終レポートを確認します。
+UI ではプロジェクト直下の `csv_mapping.json` を自動的に読み込みます。
 
 ## 出力物
 
-共通出力:
+既定では run ごとに出力ディレクトリを作ります。
 
-- `workspace/telemetry_data.csv`: 同期済みテレメトリデータ
-- `workspace/flight_history.csv`: 複数フライトの統計量推移履歴
-- `output/runs/YYYYMMDD_HHMMSS_<logname>/raw_telemetry.png`: 生テレメトリの時系列グラフ
-- `output/runs/YYYYMMDD_HHMMSS_<logname>/pca_plot.png`: PCA スコアの時系列グラフ
-- `output/runs/YYYYMMDD_HHMMSS_<logname>/pca_variance.png`: 主成分寄与率
-- `output/runs/YYYYMMDD_HHMMSS_<logname>/drone_analysis_report.md`: 統合 Markdown レポート
+```text
+output/runs/YYYYMMDD_HHMMSS_<input_stem>/
+```
 
-Markdownレポートには、入力形式に応じて以下の読み込みレポートが追加されます。
+ログ解析の主な出力:
 
-- ULog入力: `ULog Parse Report`
-- CSV入力: `CSV Parse Report`
+| ファイル | 内容 |
+| --- | --- |
+| `drone_analysis_report.md` | 統合 Markdown レポート |
+| `diagnosis_<model>.md` / `diagnosis.md` | LLM 診断 |
+| `raw_telemetry.png` | 生テレメトリ時系列 |
+| `pca_plot.png` | PCA スコア時系列 |
+| `pca_variance.png` | PCA 寄与率 |
 
-LLM 診断出力:
+動画単体解析の主な出力:
 
-- CLI: `output/runs/YYYYMMDD_HHMMSS_<logname>/diagnosis_<model>.md`
-- Web UI: `output/runs/YYYYMMDD_HHMMSS_<uploaded-log>/diagnosis.md`
+| ファイル | 内容 |
+| --- | --- |
+| `video_analysis_report.md` | 動画単体 Markdown レポート |
+| `video_diagnosis.md` | 動画単体 LLM 診断 |
 
-既定では成果物を run 単位のディレクトリに分けて保存します。`workspace/flight_history.csv` は履歴用の共有ファイルとして維持されます。CLI で `--flat-output` を指定した場合は `output/` 直下に出力され、前回の同名ファイルが上書きされます。
+共有 workspace 出力:
 
-## Codexレビュー対応状況
+| ファイル | 内容 |
+| --- | --- |
+| `workspace/telemetry_data.csv` | 同期済みテレメトリ |
+| `workspace/flight_history.csv` | フライト履歴 |
+| `workspace/llm_prompt.txt` | ログ解析 export プロンプト |
+| `workspace/video_llm_prompt.txt` | 動画単体 export プロンプト |
 
-`devai/drone_flightlog_framework_review_codex.md` の改善提案 1〜10 は、以下の実装・テストで対応しています。
+## Markdown レポートの主なセクション
 
-| # | 対応内容 | 主な実装 |
-|---|---|---|
-| 1 | Parse Report を最終 Markdown に出力 | `drone_app.report_exporter.DroneReportExporter` が `ULog Parse Report` / `CSV Parse Report` を追記 |
-| 2 | CLI と Streamlit の解析パイプライン共通化 | `drone_app.pipeline.run_analysis_pipeline` を `main.py` と `dronelog_uiapps.py` から利用 |
-| 3 | フライト履歴に入力ファイル識別子を保存 | `FlightHistoryManager` がファイル名、サイズ、更新時刻、SHA-256を保存し、重複検出に利用 |
-| 4 | 構造的変化検知の仕様見直し | `StructuralBreakAnalyzer` で最低履歴数、直近判定数、閾値倍率を設定化 |
-| 5 | PCA 前処理情報のレポート化 | `pca_preprocessing_report` を artifact として保存し Markdown に出力 |
-| 6 | 異常検知しきい値の設定化 | CLI / Web UI / pipeline で `anomaly_z_threshold` を指定可能 |
-| 7 | LLMプロンプトに単位・座標系・注意書きを追加 | `LLMInterpreter` が前提・注意、特徴量説明、元系列確認指示をプロンプトに含める |
-| 8 | 出力ディレクトリを run 単位に分離 | 既定で `output/runs/YYYYMMDD_HHMMSS_<logname>/` に成果物を出力 |
-| 9 | Streamlit UI の LLM 設定解決を CLI と統一 | UI も `resolve_llm_settings` と共通 pipeline を使用し、`api` / `export` を選択可能 |
-| 10 | テスト対象をパイプライン全体へ拡張 | CSV + dummy LLM E2E、export mode E2E、DroneReportExporter、UI設定解決のテストを追加 |
+ログ解析レポート:
+
+- Executive Summary
+- Data Quality
+- Figures
+- PCA Summary
+- PCA Loadings
+- ULog Parse Report
+- CSV Parse Report
+- PCA Anomaly Detection Report
+- Structural Break Report
+- Telemetry Flight Phases
+- Video Summary
+- Video Coverage
+- Video Events
+- Telemetry vs Video
+- Warnings
+- Appendix
+
+動画単体レポート:
+
+- 概要
+- 動画メタデータ
+- 動画同期情報
+- カバレッジ
+- 特徴量統計
+- 動画イベント
+- AIによる解釈
+- 警告
+- 付録
+
+## ローカルエージェント連携
+
+Claude Code、Codex、Agy を使う場合は `export` モードを使います。これにより、クラウド API を呼ばずに診断プロンプトをファイルへ出力できます。
+
+### ログ解析プロンプト
+
+```powershell
+python .\main.py .\flight.ulg --mode export
+```
+
+出力:
+
+```text
+workspace/llm_prompt.txt
+```
+
+Claude Code:
+
+```powershell
+claude "workspace/llm_prompt.txt を読み込み、指示に従ってドローン解析診断レポートを日本語Markdownで作成し、output/diagnosis_claude.md に保存してください。"
+```
+
+Agy:
+
+```powershell
+agy run "workspace/llm_prompt.txt を読み込み、ドローン解析診断レポートを日本語Markdownで output/diagnosis_agy.md に作成してください。"
+```
+
+Codex:
+
+```text
+workspace/llm_prompt.txt を読み込み、ドローン飛行解析の診断レポートを日本語Markdownで作成し、output/diagnosis_codex.md に保存してください。
+```
+
+### 動画単体プロンプト
+
+```powershell
+python .\video_main.py .\flight_video.mp4 --mode export --llm dummy
+```
+
+出力:
+
+```text
+workspace/video_llm_prompt.txt
+```
+
+Claude Code:
+
+```powershell
+claude "workspace/video_llm_prompt.txt を読み込み、動画単体解析レポートを日本語Markdownで output/video_diagnosis_claude.md に保存してください。"
+```
+
+Agy:
+
+```powershell
+agy run "workspace/video_llm_prompt.txt を読み込み、動画単体解析レポートを日本語Markdownで output/video_diagnosis_agy.md に作成してください。"
+```
+
+Codex:
+
+```text
+workspace/video_llm_prompt.txt を読み込み、動画単体解析レポートを日本語Markdownで output/video_diagnosis_codex.md に保存してください。
+```
+
+## 経年劣化・構造的変化検知
+
+解析ごとに PCA スコア統計を `workspace/flight_history.csv` に追記します。
+
+履歴が十分に蓄積されると、`StructuralBreakAnalyzer` が直近フライト群の分散変化を過去平均との差分で評価します。検知された場合は、Markdown レポートと LLM プロンプトに警告が入ります。
+
+主な調整オプション:
+
+```powershell
+python .\main.py .\flight.ulg --break-min-history 5 --break-threshold-sigma 2.0
+```
 
 ## 検証
 
-構文チェック:
+全テスト:
 
 ```powershell
-python -m compileall .\main.py .\dronelog_uiapps.py .\drone_app .\profilecore .\tests
+python -m pytest
 ```
 
-ユニットテスト:
+構文確認:
 
 ```powershell
-# すべてのユニットテストを実行
-python -m unittest discover -s tests
-
-# または pytest を使用して経年劣化検知テストを実行
-pytest tests/test_degradation.py
+python -m compileall .\main.py .\video_main.py .\dronelog_uiapps.py .\video_uiapps.py .\drone_app .\tests
 ```
 
-CLI 回帰確認:
+ログ解析 smoke:
 
 ```powershell
-python .\main.py .\log_7_2026-3-10-10-46-34.ulg --llm-config .\llm_config.dummy.json
+python .\main.py .\telemetry.csv --llm dummy
 ```
 
-CSV入力確認:
+動画単体 smoke:
 
 ```powershell
-python .\main.py .\workspace\telemetry_data.csv --llm dummy
-```
-
-Web UI 起動確認:
-
-```powershell
-python -m streamlit run .\dronelog_uiapps.py
+python .\video_main.py .\flight_video.mp4 --camera-viewpoint external
 ```
 
 ## 注意事項
 
-- Gemini / OpenAI / Anthropic 連携は、有料 API の利用が発生する可能性があります。
-- API キー未設定時は、CLI ではエラー終了し、Web UI では画面上にエラーを表示します。
-- `mode=export` では API を呼び出さないため、Gemini / OpenAI / Anthropic を選んだ場合でも API キーなしでプロンプトを書き出せます。
-- `dummy` は API キーなしの動作確認用です。実際の診断文は生成しません。
-- `llm_config.json` の `service` と CLI の `--llm` が異なる場合、CLI の `--llm` が優先されます。この場合、`--model` を指定しなければ選択サービスのデフォルトモデルを使います。
+- Gemini / OpenAI / Anthropic の API 利用には料金が発生する可能性があります。
+- `dummy` は動作確認用です。実診断としては使いません。
+- `mode=export` は API キーなしで使えます。
+- 動画解析には OpenCV が必要です。
+- 動画単体解析では、ログ由来の機体異常は判定できません。
+- 外部カメラ映像では、手ブレや撮影者操作を機体挙動と断定しないでください。
+- 動画とログの同期がずれると、照合結果もずれます。`video_alignment_confidence` を適切に設定してください。
+
+## 参考ドキュメント
+
+- [動画とフライトログ統合解析の利用手順](video_log_analysis_usage.md)
+- [動画単体解析 実装プラン](devai/plan20260618_video_only_analysis_codex.md)
+- [動画単体解析 実装レポート](devai/implementation20260618_video_only_analysis_codex.md)

@@ -7,11 +7,13 @@ from profilecore.core.quality import build_data_quality_summary
 from drone_app.analyzer import TelemetryAnalyzer
 from drone_app.break_detector import StructuralBreakAnalyzer
 from drone_app.csv_loader import CsvTelemetryLoader
+from drone_app.flight_phase_analyzer import FlightPhaseAnalyzer
 from drone_app.history_manager import FlightHistoryManager
 from drone_app.interpreter import LLMInterpreter
 from drone_app.llm_clients import create_llm_client, resolve_llm_settings
 from drone_app.parser import UlgParser
 from drone_app.report_exporter import DroneReportExporter
+from drone_app.video_analyzer import VideoAnalyzer
 from drone_app.visualizer import TelemetryVisualizer
 
 
@@ -31,6 +33,10 @@ def run_analysis_pipeline(
     report_filename="drone_analysis_report.md",
     status_callback=None,
     anomaly_z_threshold=3.0,
+    video_path=None,
+    video_offset_s=0.0,
+    camera_viewpoint="external",
+    video_alignment_confidence=0.5,
     history_duplicate_policy="append",
     break_min_history=5,
     break_recent_window=2,
@@ -69,6 +75,7 @@ def run_analysis_pipeline(
         n_components=3,
         anomaly_z_threshold=anomaly_z_threshold,
     )
+    FlightPhaseAnalyzer(context).analyze(data_key="raw_data")
     pca_variance = context.get_data("pca_variance")
     _set_feature_status(context, pca_variance)
     context.set_artifact("summary_insights", build_summary_insights(context, pca_variance))
@@ -91,6 +98,16 @@ def run_analysis_pipeline(
         recent_window=break_recent_window,
         threshold_sigma=break_threshold_sigma,
     ).detect_breaks()
+
+    if video_path:
+        _status(status_callback, "動画解析中...")
+        VideoAnalyzer(context).analyze(
+            video_path,
+            df,
+            video_offset_s=video_offset_s,
+            camera_viewpoint=camera_viewpoint,
+            alignment_confidence=video_alignment_confidence,
+        )
 
     _status(status_callback, "AI診断文生成中...")
     llm_settings = resolve_llm_settings(

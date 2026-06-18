@@ -28,8 +28,29 @@ class DroneReportExporter:
         anomaly_config = self.context.get_artifact("anomaly_detection_config")
         anomaly_details = self.context.get_artifact("anomaly_details")
         structural_break = self.context.get_data("structural_break")
+        flight_phase_report = self.context.get_artifact("flight_phase_report")
+        flight_phases = self.context.get_data("flight_phases")
+        video_report = self.context.get_artifact("video_parse_report")
+        video_alignment = self.context.get_artifact("video_alignment")
+        video_coverage = self.context.get_artifact("video_coverage")
+        video_events = self.context.get_data("video_events")
+        telemetry_video_comparison = self.context.get_artifact("telemetry_video_comparison")
 
-        if not any([ulg_report, csv_report, pca_preprocessing, anomaly_config, anomaly_details, structural_break]):
+        if not any([
+            ulg_report,
+            csv_report,
+            pca_preprocessing,
+            anomaly_config,
+            anomaly_details,
+            structural_break,
+            flight_phase_report,
+            flight_phases is not None and not flight_phases.empty,
+            video_report,
+            video_alignment,
+            video_coverage,
+            video_events is not None and not video_events.empty,
+            telemetry_video_comparison,
+        ]):
             return
 
         report_file.write("## Drone Flight Log Details\n\n")
@@ -38,6 +59,15 @@ class DroneReportExporter:
         self._write_pca_preprocessing_report(report_file, pca_preprocessing)
         self._write_anomaly_report(report_file, anomaly_config, anomaly_details)
         self._write_structural_break_report(report_file, structural_break)
+        self._write_flight_phase_report(report_file, flight_phase_report, flight_phases)
+        self._write_video_report(
+            report_file,
+            video_report,
+            video_alignment,
+            video_coverage,
+            video_events,
+            telemetry_video_comparison,
+        )
 
     def _write_ulg_parse_report(self, report_file, parse_report):
         if not parse_report:
@@ -196,6 +226,102 @@ class DroneReportExporter:
                         "Score": detail.get("score"),
                     })
             self._write_records(report_file, "Detected PCA Score Spikes", rows)
+
+    def _write_flight_phase_report(self, report_file, flight_phase_report, flight_phases):
+        if not flight_phase_report and (flight_phases is None or flight_phases.empty):
+            return
+
+        report_file.write("### Telemetry Flight Phases\n\n")
+        if flight_phase_report:
+            self._write_overview_table(
+                report_file,
+                flight_phase_report,
+                [
+                    "status",
+                    "reason",
+                    "rows",
+                    "altitude_source",
+                    "vertical_speed_source",
+                    "throttle_source",
+                ],
+            )
+            self._write_dict_table(
+                report_file,
+                "Phase Counts",
+                flight_phase_report.get("phase_counts"),
+                "Phase",
+                "Count",
+            )
+        if flight_phases is not None and not flight_phases.empty:
+            self._write_records(report_file, "Flight Phase Samples", flight_phases.head(50).to_dict("records"))
+
+    def _write_video_report(
+        self,
+        report_file,
+        video_report,
+        video_alignment,
+        video_coverage,
+        video_events,
+        telemetry_video_comparison,
+    ):
+        if not any([
+            video_report,
+            video_alignment,
+            video_coverage,
+            video_events is not None and not video_events.empty,
+            telemetry_video_comparison,
+        ]):
+            return
+
+        report_file.write("### Video Summary\n\n")
+        if video_report:
+            self._write_overview_table(
+                report_file,
+                video_report,
+                [
+                    "status",
+                    "reason",
+                    "file_name",
+                    "video_path",
+                    "camera_viewpoint",
+                    "duration_s",
+                    "fps",
+                    "width",
+                    "height",
+                    "codec",
+                    "frame_count",
+                    "sample_interval_s",
+                    "feature_rows",
+                    "event_count",
+                ],
+            )
+        if video_alignment:
+            self._write_overview_table(
+                report_file,
+                video_alignment,
+                ["mode", "video_offset_s", "confidence", "event_window_s", "formula", "camera_viewpoint"],
+            )
+
+        if video_coverage:
+            report_file.write("### Video Coverage\n\n")
+            self._write_overview_table(
+                report_file,
+                video_coverage,
+                [
+                    "start_elapsed_s",
+                    "end_elapsed_s",
+                    "duration_s",
+                    "telemetry_duration_s",
+                    "coverage_ratio",
+                ],
+            )
+
+        if video_events is not None and not video_events.empty:
+            rows = video_events.head(100).to_dict("records")
+            self._write_records(report_file, "Video Events", rows)
+
+        if telemetry_video_comparison:
+            self._write_records(report_file, "Telemetry vs Video", telemetry_video_comparison)
 
     def _write_overview_table(self, report_file, values, keys):
         rows = [

@@ -26,6 +26,13 @@ class LLMInterpreter(AnalysisModule):
         anomaly_timestamps = self.context.get_data('anomaly_timestamps')
         pca_preprocessing = self.context.get_artifact('pca_preprocessing_report')
         anomaly_config = self.context.get_artifact('anomaly_detection_config')
+        video_parse_report = self.context.get_artifact('video_parse_report')
+        video_alignment = self.context.get_artifact('video_alignment')
+        video_coverage = self.context.get_artifact('video_coverage')
+        video_comparison = self.context.get_artifact('telemetry_video_comparison')
+        video_events = self.context.get_data('video_events')
+        flight_phase_report = self.context.get_artifact('flight_phase_report')
+        flight_phases = self.context.get_data('flight_phases')
 
         # 新たに structural_break と flight_history をContextから取得する（存在する場合）
         structural_break = self.context.get_data('structural_break')
@@ -43,6 +50,13 @@ class LLMInterpreter(AnalysisModule):
         stats_summary['flight_history'] = flight_history
         stats_summary['pca_preprocessing'] = pca_preprocessing
         stats_summary['anomaly_config'] = anomaly_config
+        stats_summary['video_parse_report'] = video_parse_report
+        stats_summary['video_alignment'] = video_alignment
+        stats_summary['video_coverage'] = video_coverage
+        stats_summary['video_events'] = video_events
+        stats_summary['telemetry_video_comparison'] = video_comparison
+        stats_summary['flight_phase_report'] = flight_phase_report
+        stats_summary['flight_phases'] = flight_phases
 
         # 3. Create prompt
         prompt = self._create_prompt(stats_summary)
@@ -195,6 +209,53 @@ claude "Read {prompt_file} and generate a detailed flight diagnosis report based
             prompt += f"- 方法: {anomaly_config.get('method')}\n"
             prompt += f"- Z-score閾値: {anomaly_config.get('z_threshold')}\n"
             prompt += f"- 判定条件: {anomaly_config.get('comparison')}\n"
+
+        video_parse_report = stats.get('video_parse_report')
+        if video_parse_report:
+            prompt += "\n### 動画解析情報\n"
+            prompt += "- 動画はログ解析とは独立した補助情報です。動画範囲外のログ異常について動画から判断しないでください。\n"
+            prompt += "- ログ数値を優先し、動画との一致・部分一致・矛盾・判定不能を明示してください。\n"
+            prompt += f"- ステータス: {video_parse_report.get('status')}\n"
+            if video_parse_report.get('reason'):
+                prompt += f"- スキップ理由: {video_parse_report.get('reason')}\n"
+            prompt += f"- カメラ視点: {video_parse_report.get('camera_viewpoint', 'external')}\n"
+            prompt += f"- 長さ/FPS/解像度: {video_parse_report.get('duration_s')} 秒 / {video_parse_report.get('fps')} / {video_parse_report.get('width')}x{video_parse_report.get('height')}\n"
+
+            video_alignment = stats.get('video_alignment') or {}
+            video_coverage = stats.get('video_coverage') or {}
+            prompt += (
+                f"- 同期方式: {video_alignment.get('mode')} "
+                f"(offset={video_alignment.get('video_offset_s')}秒, "
+                f"confidence={video_alignment.get('confidence')}, "
+                f"window=±{video_alignment.get('event_window_s')}秒)\n"
+            )
+            prompt += (
+                "- 動画カバレッジ: "
+                f"{video_coverage.get('start_elapsed_s')}秒 - {video_coverage.get('end_elapsed_s')}秒 "
+                f"(coverage_ratio={video_coverage.get('coverage_ratio')})\n"
+            )
+
+            video_events = stats.get('video_events')
+            if video_events is not None and not video_events.empty:
+                prompt += "- 動画イベント（先頭30件）:\n"
+                for row in video_events.head(30).to_dict('records'):
+                    prompt += f"  - {row}\n"
+
+            comparison = stats.get('telemetry_video_comparison')
+            if comparison:
+                prompt += "- ログ異常と動画イベントの照合:\n"
+                for row in comparison[:30]:
+                    prompt += f"  - {row}\n"
+
+            flight_phase_report = stats.get('flight_phase_report')
+            if flight_phase_report:
+                prompt += "- ログ側フライトフェーズ抽出:\n"
+                prompt += f"  - {flight_phase_report}\n"
+            flight_phases = stats.get('flight_phases')
+            if flight_phases is not None and not flight_phases.empty:
+                prompt += "- ログ側フライトフェーズサンプル（先頭30件）:\n"
+                for row in flight_phases.head(30).to_dict('records'):
+                    prompt += f"  - {row}\n"
 
         prompt += """
 2. 主成分スコアの基本統計量:

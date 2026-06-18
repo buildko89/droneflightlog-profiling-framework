@@ -6,6 +6,7 @@ import unittest
 from drone_app.llm_clients import (
     DummyClient,
     create_llm_client,
+    get_model_choices,
     load_llm_config,
     resolve_llm_settings,
 )
@@ -53,6 +54,15 @@ class TestLLMConfig(unittest.TestCase):
 
         self.assertEqual(settings["service"], "gemini")
         self.assertIsNone(settings["model"])
+
+    def test_model_choices_include_configured_custom_model(self):
+        choices = get_model_choices("gemini", "custom-gemini-model")
+
+        self.assertEqual(choices[0], "custom-gemini-model")
+        self.assertIn("gemini-2.5-flash", choices)
+
+    def test_model_choices_for_dummy(self):
+        self.assertEqual(get_model_choices("dummy"), ["dummy-model"])
 
     def _write_config(self, payload):
         fd, path = tempfile.mkstemp(suffix=".json")

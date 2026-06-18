@@ -7,6 +7,38 @@ import anthropic
 
 SUPPORTED_LLM_TYPES = ("gemini", "openai", "anthropic", "dummy")
 DEFAULT_LLM_CONFIG_PATH = "llm_config.json"
+SUPPORTED_LLM_MODELS = {
+    "gemini": [
+        "gemini-2.5-flash",
+        "gemini-2.5-pro",
+        "gemini-1.5-flash",
+        "gemini-1.5-pro",
+    ],
+    "openai": [
+        "gpt-4o",
+        "gpt-4o-mini",
+        "gpt-4.1",
+        "gpt-4.1-mini",
+    ],
+    "anthropic": [
+        "claude-3-5-sonnet-20240620",
+        "claude-3-5-haiku-20241022",
+        "claude-3-opus-20240229",
+    ],
+    "dummy": [
+        "dummy-model",
+    ],
+}
+
+
+def get_model_choices(service, configured_model=None):
+    """
+    Returns UI model choices for a service, preserving custom configured models.
+    """
+    choices = list(SUPPORTED_LLM_MODELS.get(service, []))
+    if configured_model and configured_model not in choices:
+        choices.insert(0, configured_model)
+    return choices
 
 
 def load_llm_config(config_path=DEFAULT_LLM_CONFIG_PATH, required=False):

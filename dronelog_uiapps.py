@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 
 from drone_app.llm_clients import (
     SUPPORTED_LLM_TYPES,
+    get_model_choices,
     get_required_api_key_name,
     load_llm_config,
     resolve_llm_settings,
@@ -38,7 +39,18 @@ def write_uploaded_file(uploaded_file):
         return temp_file.name
 
 
-def run_ui_analysis(file_path, llm_type, model_name, mode="api", anomaly_z_threshold=3.0, status=None):
+def run_ui_analysis(
+    file_path,
+    llm_type,
+    model_name,
+    mode="api",
+    anomaly_z_threshold=3.0,
+    video_path=None,
+    video_offset_s=0.0,
+    camera_viewpoint="external",
+    video_alignment_confidence=0.5,
+    status=None,
+):
     llm_settings = resolve_llm_settings(
         service=llm_type,
         model_name=model_name or None,
@@ -59,6 +71,10 @@ def run_ui_analysis(file_path, llm_type, model_name, mode="api", anomaly_z_thres
         diagnosis_filename=DIAGNOSIS_FILENAME,
         report_filename=REPORT_FILENAME,
         anomaly_z_threshold=anomaly_z_threshold,
+        video_path=video_path,
+        video_offset_s=video_offset_s,
+        camera_viewpoint=camera_viewpoint,
+        video_alignment_confidence=video_alignment_confidence,
         status_callback=status.write if status else None,
     )
 
@@ -164,6 +180,23 @@ def render_results(results):
             st.json(data_quality)
         else:
             st.info("データ品質サマリーがありません。")
+
+        st.subheader("動画解析")
+        video_report = context.get_artifact("video_parse_report")
+        video_coverage = context.get_artifact("video_coverage")
+        video_events = context.get_data("video_events")
+        telemetry_video_comparison = context.get_artifact("telemetry_video_comparison")
+        if video_report:
+            st.json({
+                "summary": video_report,
+                "coverage": video_coverage,
+            })
+            if video_events is not None and not video_events.empty:
+                st.dataframe(video_events, width="stretch")
+            if telemetry_video_comparison:
+                st.dataframe(pd.DataFrame(telemetry_video_comparison), width="stretch")
+        else:
+            st.info("動画ファイルは指定されていません。")
 
         st.subheader("成果物")
         render_download_button("CSVをダウンロード", results["csv_path"], "text/csv", "download_analysis_csv")
@@ -277,13 +310,16 @@ def main():
         index=default_llm_index,
         key="sidebar_llm_type",
     )
-    model_default = default_model_name if llm_type == default_llm_type else ""
-    model_name = st.sidebar.text_input(
-        "モデル名の指定",
-        value=model_default,
-        help="空欄の場合はクライアントのデフォルト値を使用します。",
+    configured_model = default_model_name if llm_type == default_llm_type else None
+    model_choices = get_model_choices(llm_type, configured_model)
+    model_index = model_choices.index(configured_model) if configured_model in model_choices else 0
+    model_name = st.sidebar.selectbox(
+        "モデルの選択",
+        options=model_choices,
+        index=model_index,
+        help="llm_config.json に独自モデルが設定されている場合は候補に追加されます。",
         key=f"model_name_{llm_type}",
-    ).strip()
+    )
     mode = st.sidebar.radio(
         "LLM連携モード",
         options=["api", "export"],
@@ -299,6 +335,30 @@ def main():
         value=3.0,
         step=0.1,
         key="anomaly_z_threshold",
+    )
+    video_offset_s = st.sidebar.number_input(
+        "動画同期オフセット秒",
+        value=0.0,
+        step=1.0,
+        help="telemetry_time = video_time + offset として照合します。",
+        key="video_offset_s",
+    )
+    camera_viewpoint = st.sidebar.radio(
+        "動画カメラ視点",
+        options=["external", "onboard"],
+        index=0,
+        horizontal=True,
+        help="external は地上撮影、onboard は機体搭載カメラとして扱います。",
+        key="camera_viewpoint",
+    )
+    video_alignment_confidence = st.sidebar.slider(
+        "動画同期信頼度",
+        min_value=0.0,
+        max_value=1.0,
+        value=0.5,
+        step=0.05,
+        help="低い場合、矛盾判定は同期不確実として扱います。",
+        key="video_alignment_confidence",
     )
 
     if llm_config:
@@ -317,6 +377,11 @@ def main():
         type=["ulg", "csv"],
         accept_multiple_files=False,
     )
+    uploaded_video = st.file_uploader(
+        "照合用動画ファイルをアップロードしてください（任意）",
+        type=["mp4", "mov", "avi", "mkv"],
+        accept_multiple_files=False,
+    )
 
     # アップロードファイルが削除された場合、表示結果をクリアする
     if uploaded_file is None:
@@ -331,8 +396,11 @@ def main():
     # 解析実行時の処理（セッション状態へ保存）
     if analyze_button and uploaded_file is not None:
         temp_file_path = None
+        temp_video_path = None
         try:
             temp_file_path = write_uploaded_file(uploaded_file)
+            if uploaded_video is not None:
+                temp_video_path = write_uploaded_file(uploaded_video)
             with st.status("解析を実行しています...", expanded=True) as status:
                 results = run_ui_analysis(
                     temp_file_path,
@@ -340,6 +408,10 @@ def main():
                     model_name,
                     mode=mode,
                     anomaly_z_threshold=anomaly_z_threshold,
+                    video_path=temp_video_path,
+                    video_offset_s=video_offset_s,
+                    camera_viewpoint=camera_viewpoint,
+                    video_alignment_confidence=video_alignment_confidence,
                     status=status,
                 )
                 status.update(label="解析が完了しました。", state="complete")
@@ -354,6 +426,11 @@ def main():
             if temp_file_path and os.path.exists(temp_file_path):
                 try:
                     os.unlink(temp_file_path)
+                except OSError:
+                    pass
+            if temp_video_path and os.path.exists(temp_video_path):
+                try:
+                    os.unlink(temp_video_path)
                 except OSError:
                     pass
 

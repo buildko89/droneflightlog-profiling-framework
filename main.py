@@ -68,12 +68,41 @@ def main():
         action="store_true",
         help="output/runs配下ではなく従来どおりoutput直下に成果物を出力する"
     )
+
+    parser.add_argument(
+        "--video",
+        help="ログと照合する動画ファイルへのパス"
+    )
+
+    parser.add_argument(
+        "--video-offset-s",
+        type=float,
+        default=0.0,
+        help="動画時刻に加算するログ上の開始オフセット秒 (telemetry_time = video_time + offset)"
+    )
+
+    parser.add_argument(
+        "--camera-viewpoint",
+        choices=["external", "onboard"],
+        default="external",
+        help="動画のカメラ視点。external=地上撮影, onboard=機体搭載 (デフォルト: external)"
+    )
+
+    parser.add_argument(
+        "--video-alignment-confidence",
+        type=float,
+        default=0.5,
+        help="動画とログの同期信頼度 0.0-1.0。低い場合、矛盾判定を要確認扱いにする"
+    )
     
     args = parser.parse_args()
 
     input_file = args.file_path
     if not os.path.exists(input_file):
         print(f"エラー: 指定されたファイルが見つかりません: {input_file}")
+        return
+    if args.video and not os.path.exists(args.video):
+        print(f"エラー: 指定された動画ファイルが見つかりません: {args.video}")
         return
 
     try:
@@ -86,6 +115,10 @@ def main():
             mode=args.mode,
             run_output_subdir=not args.flat_output,
             anomaly_z_threshold=args.anomaly_z_threshold,
+            video_path=args.video,
+            video_offset_s=args.video_offset_s,
+            camera_viewpoint=args.camera_viewpoint,
+            video_alignment_confidence=args.video_alignment_confidence,
             break_min_history=args.break_min_history,
             break_threshold_sigma=args.break_threshold_sigma,
         )
