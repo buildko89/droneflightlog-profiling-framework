@@ -254,7 +254,7 @@ class RawTelemetryInterpreter(AnalysisModule):
 
     def _export_prompt(self, prompt, output_file):
         workspace_dir = getattr(self.context, "workspace_dir", "workspace")
-        prompt_file = os.path.join(workspace_dir, "raw_telemetry_llm_prompt.txt")
+        prompt_file = os.path.join(workspace_dir, self._prompt_filename("raw_telemetry_llm_prompt"))
         try:
             os.makedirs(os.path.dirname(prompt_file), exist_ok=True)
             with open(prompt_file, "w", encoding="utf-8") as file_obj:
@@ -275,6 +275,13 @@ PCAを使わないログ直接診断用プロンプトを出力しました。
 - **プロンプトファイルパス**: `{prompt_file}`
 """
         return self._write_diagnosis(instructions, output_file)
+
+    def _prompt_filename(self, stem):
+        run_output = self.context.get_artifact("run_output") or {}
+        output_tag = run_output.get("output_tag")
+        if output_tag:
+            return f"{stem}_{output_tag}.txt"
+        return f"{stem}.txt"
 
     def _write_diagnosis(self, text, output_file):
         text_df = pd.DataFrame({"interpretation": [text]})

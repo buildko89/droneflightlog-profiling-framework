@@ -182,7 +182,11 @@ class TestDroneProfileCoreIntegration(unittest.TestCase):
         anomaly_config = results["context"].get_artifact("anomaly_detection_config")
         self.assertEqual(anomaly_config["z_threshold"], 2.5)
         self.assertTrue(os.path.exists(results["csv_path"]))
-        self.assertIn("telemetry_telemetry_data_", os.path.basename(results["csv_path"]))
+        self.assertIn("telemetry_pca_telemetry_data_", os.path.basename(results["csv_path"]))
+        self.assertIn("_pca_", os.path.basename(results["report_path"]))
+        self.assertIn("_pca_", os.path.basename(results["diagnosis_path"]))
+        self.assertIn("_pca_", os.path.basename(results["raw_telemetry_path"]))
+        self.assertIn("_pca_", os.path.basename(results["pca_plot_path"]))
 
         with open(results["report_path"], encoding="utf-8") as report_file:
             report = report_file.read()
@@ -218,6 +222,10 @@ class TestDroneProfileCoreIntegration(unittest.TestCase):
         self.assertIsNone(context.get_data("pca_scores"))
         self.assertTrue(os.path.exists(results["diagnosis_path"]))
         self.assertTrue(os.path.exists(results["report_path"]))
+        self.assertIn("_raw_", os.path.basename(results["csv_path"]))
+        self.assertIn("_raw_", os.path.basename(results["diagnosis_path"]))
+        self.assertIn("_raw_", os.path.basename(results["report_path"]))
+        self.assertIn("_raw_", os.path.basename(results["raw_telemetry_path"]))
 
         with open(results["diagnosis_path"], encoding="utf-8") as diagnosis_file:
             diagnosis = diagnosis_file.read()
@@ -231,11 +239,11 @@ class TestDroneProfileCoreIntegration(unittest.TestCase):
 
     def test_csv_output_path_includes_source_name_and_run_id(self):
         first_path = _resolve_csv_output_path(self.output_dir, "flight.ulg", "run_one")
-        second_path = _resolve_csv_output_path(self.output_dir, "flight.ulg", "run_two")
+        second_path = _resolve_csv_output_path(self.output_dir, "flight.ulg", "run_two", analysis_mode="raw")
 
         self.assertNotEqual(first_path, second_path)
-        self.assertEqual(os.path.basename(first_path), "flight_telemetry_data_run_one.csv")
-        self.assertEqual(os.path.basename(second_path), "flight_telemetry_data_run_two.csv")
+        self.assertEqual(os.path.basename(first_path), "flight_pca_telemetry_data_run_one.csv")
+        self.assertEqual(os.path.basename(second_path), "flight_raw_telemetry_data_run_two.csv")
 
     def test_pipeline_export_mode_writes_prompt_without_api_key(self):
         csv_path = os.path.join(self.output_dir, "telemetry_export.csv")
@@ -257,12 +265,15 @@ class TestDroneProfileCoreIntegration(unittest.TestCase):
             if old_api_key is not None:
                 os.environ["GEMINI_API_KEY"] = old_api_key
 
-        prompt_path = os.path.join(self.output_dir, "llm_prompt.txt")
+        output_tag = results["context"].get_artifact("run_output")["output_tag"]
+        prompt_path = os.path.join(self.output_dir, f"llm_prompt_{output_tag}.txt")
         self.assertEqual(results["llm_settings"]["mode"], "export")
         self.assertEqual(results["llm_settings"]["service"], "gemini")
         self.assertTrue(os.path.exists(prompt_path))
         self.assertTrue(os.path.exists(results["diagnosis_path"]))
         self.assertTrue(os.path.exists(results["report_path"]))
+        self.assertIn("_pca_", os.path.basename(results["diagnosis_path"]))
+        self.assertIn("_pca_", os.path.basename(results["report_path"]))
 
         with open(results["diagnosis_path"], encoding="utf-8") as diagnosis_file:
             diagnosis = diagnosis_file.read()

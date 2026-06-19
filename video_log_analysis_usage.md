@@ -141,7 +141,7 @@ python .\main.py .\path\to\flight.ulg `
   --camera-viewpoint external
 ```
 
-この場合、API は呼ばずに `workspace/llm_prompt.txt` に診断用プロンプトが出力されます。
+この場合、API は呼ばずに `workspace/llm_prompt_<mode>_<run_id>.txt` に診断用プロンプトが出力されます。
 
 ## 6. CLI オプション
 
@@ -191,11 +191,11 @@ output/runs/<timestamp>_<input_file_stem>/
 
 | ファイル | 内容 |
 | --- | --- |
-| `drone_analysis_report.md` | 統合 Markdown レポート |
-| `diagnosis_*.md` または `diagnosis.md` | LLM 診断結果 |
-| `raw_telemetry.png` | ログ時系列グラフ |
-| `pca_plot.png` | PCA スコア推移 |
-| `pca_variance.png` | PCA 寄与率 |
+| `drone_analysis_report_<mode>_<run_id>.md` | 統合 Markdown レポート |
+| `diagnosis_*_<mode>_<run_id>.md` または `raw_telemetry_diagnosis_*_<mode>_<run_id>.md` | LLM 診断結果 |
+| `raw_telemetry_<mode>_<run_id>.png` | ログ時系列グラフ |
+| `pca_plot_<mode>_<run_id>.png` | PCA スコア推移 |
+| `pca_variance_<mode>_<run_id>.png` | PCA 寄与率 |
 
 `--flat-output` を指定した場合は `output/` 直下に出力されます。
 

@@ -50,6 +50,7 @@ def run_analysis_pipeline(
     os.makedirs(workspace_dir, exist_ok=True)
     effective_run_id = _resolve_run_id(file_path, run_id)
     effective_output_dir = _resolve_output_dir(output_dir, run_output_subdir, effective_run_id)
+    output_tag = _resolve_output_tag(analysis_mode, effective_run_id, video_path)
     os.makedirs(effective_output_dir, exist_ok=True)
 
     context = ProfileCoreContext(workspace_dir=workspace_dir)
@@ -64,6 +65,7 @@ def run_analysis_pipeline(
         "base_output_dir": output_dir,
         "run_output_subdir": bool(run_output_subdir),
         "run_id": effective_run_id,
+        "output_tag": output_tag,
     })
 
     _status(status_callback, "データパース中...")
@@ -72,7 +74,7 @@ def run_analysis_pipeline(
     context.set_artifact("data_quality", build_data_quality_summary(df))
     context.add_log(f"Parsed {len(df)} samples into context with key 'raw_data'")
 
-    csv_path = _resolve_csv_output_path(workspace_dir, file_path, effective_run_id)
+    csv_path = _resolve_csv_output_path(workspace_dir, file_path, effective_run_id, analysis_mode)
     df.to_csv(csv_path)
     context.add_log(f"Raw data saved to: {csv_path}")
 
@@ -104,10 +106,13 @@ def run_analysis_pipeline(
 
     _status(status_callback, "グラフ生成中...")
     visualizer = TelemetryVisualizer(context, output_dir=effective_output_dir)
-    visualizer.plot_raw_telemetry(filename="raw_telemetry.png")
+    raw_telemetry_filename = f"raw_telemetry_{output_tag}.png"
+    pca_plot_filename = f"pca_plot_{output_tag}.png"
+    pca_variance_filename = f"pca_variance_{output_tag}.png"
+    visualizer.plot_raw_telemetry(filename=raw_telemetry_filename)
     if analysis_mode == "pca":
-        visualizer.plot_pca_results(filename="pca_plot.png")
-        visualizer.plot_variance(filename="pca_variance.png")
+        visualizer.plot_pca_results(filename=pca_plot_filename)
+        visualizer.plot_variance(filename=pca_variance_filename)
     context.add_log(f"Visualizations generated and saved to '{effective_output_dir}' folder.")
 
     if analysis_mode == "pca":
@@ -160,11 +165,12 @@ def run_analysis_pipeline(
         else LLMInterpreter(context, llm_client=client)
     )
     if diagnosis_filename:
-        diagnosis_path = os.path.join(effective_output_dir, diagnosis_filename)
+        effective_diagnosis_filename = _append_output_tag(diagnosis_filename, output_tag)
     else:
         safe_model_name = client.model_name.replace("/", "_").replace(":", "_")
         prefix = "raw_telemetry_diagnosis" if analysis_mode == "raw" else "diagnosis"
-        diagnosis_path = os.path.join(effective_output_dir, f"{prefix}_{safe_model_name}.md")
+        effective_diagnosis_filename = f"{prefix}_{safe_model_name}_{output_tag}.md"
+    diagnosis_path = os.path.join(effective_output_dir, effective_diagnosis_filename)
 
     if not interpreter.run_interpretation(output_file=diagnosis_path):
         raise RuntimeError(f"LLM Interpretation failed using client '{llm_settings['service']}'.")
@@ -177,7 +183,8 @@ def run_analysis_pipeline(
 
     _status(status_callback, "Markdownレポート出力中...")
     exporter = DroneReportExporter(context, output_dir=effective_output_dir)
-    exporter.export_markdown(filename=report_filename)
+    effective_report_filename = _append_output_tag(report_filename, output_tag)
+    exporter.export_markdown(filename=effective_report_filename)
     context.add_log("Final report generated.")
 
     return {
@@ -187,10 +194,10 @@ def run_analysis_pipeline(
         "csv_path": csv_path,
         "diagnosis_path": diagnosis_path,
         "output_dir": effective_output_dir,
-        "report_path": os.path.join(effective_output_dir, report_filename),
-        "raw_telemetry_path": os.path.join(effective_output_dir, "raw_telemetry.png"),
-        "pca_plot_path": os.path.join(effective_output_dir, "pca_plot.png") if analysis_mode == "pca" else None,
-        "pca_variance_path": os.path.join(effective_output_dir, "pca_variance.png") if analysis_mode == "pca" else None,
+        "report_path": os.path.join(effective_output_dir, effective_report_filename),
+        "raw_telemetry_path": os.path.join(effective_output_dir, raw_telemetry_filename),
+        "pca_plot_path": os.path.join(effective_output_dir, pca_plot_filename) if analysis_mode == "pca" else None,
+        "pca_variance_path": os.path.join(effective_output_dir, pca_variance_filename) if analysis_mode == "pca" else None,
     }
 
 
@@ -272,10 +279,11 @@ def _resolve_output_dir(base_output_dir, run_output_subdir, run_id):
     return os.path.join(base_output_dir, "runs", run_id)
 
 
-def _resolve_csv_output_path(workspace_dir, file_path, run_id):
+def _resolve_csv_output_path(workspace_dir, file_path, run_id, analysis_mode="pca"):
     safe_stem = _safe_file_stem(file_path)
     safe_run_id = _safe_name(run_id)
-    return os.path.join(workspace_dir, f"{safe_stem}_telemetry_data_{safe_run_id}.csv")
+    safe_mode = _safe_name(analysis_mode)
+    return os.path.join(workspace_dir, f"{safe_stem}_{safe_mode}_telemetry_data_{safe_run_id}.csv")
 
 
 def _resolve_run_id(file_path, run_id=None):
@@ -295,6 +303,22 @@ def _safe_name(value):
         for character in str(value)
     ).strip("_")
     return safe_value or "flight"
+
+
+def _resolve_output_tag(analysis_mode, run_id, video_path=None):
+    parts = [_safe_name(analysis_mode)]
+    if video_path:
+        parts.append("video")
+    parts.append(_safe_name(run_id))
+    return "_".join(parts)
+
+
+def _append_output_tag(filename, output_tag):
+    stem, extension = os.path.splitext(os.path.basename(filename))
+    extension = extension or ".md"
+    if output_tag in stem:
+        return f"{stem}{extension}"
+    return f"{stem}_{output_tag}{extension}"
 
 
 def _status(callback, message):

@@ -30,7 +30,7 @@ PX4 ドローンのフライトログ、テレメトリ CSV、動画ファイル
 
 | モード | 入力 | エントリポイント | 主な出力 |
 | --- | --- | --- | --- |
-| ログ解析 | `.ulg` または `.csv` | `main.py` / `dronelog_uiapps.py` | `drone_analysis_report.md` |
+| ログ解析 | `.ulg` または `.csv` | `main.py` / `dronelog_uiapps.py` | `drone_analysis_report_<mode>_<run_id>.md` |
 | 動画付きログ解析 | `.ulg` / `.csv` + 動画 | `main.py` / `dronelog_uiapps.py` | ログ解析レポート + 動画照合 |
 | 動画単体解析 | 動画のみ | `video_main.py` / `video_uiapps.py` | `video_analysis_report.md` |
 
@@ -400,12 +400,25 @@ output/runs/YYYYMMDD_HHMMSS_<input_stem>/
 
 | ファイル | 内容 |
 | --- | --- |
-| `drone_analysis_report.md` | 統合 Markdown レポート |
-| `diagnosis_<model>.md` / `diagnosis.md` | LLM 診断 |
-| `raw_telemetry_diagnosis_<model>.md` | raw モードの生テレメトリ直接 LLM 診断 |
-| `raw_telemetry.png` | 生テレメトリ時系列 |
-| `pca_plot.png` | PCA スコア時系列 |
-| `pca_variance.png` | PCA 寄与率 |
+| `drone_analysis_report_<mode>_<run_id>.md` | 統合 Markdown レポート |
+| `diagnosis_<model>_<mode>_<run_id>.md` | PCA モードの LLM 診断 |
+| `raw_telemetry_diagnosis_<model>_<mode>_<run_id>.md` | raw モードの生テレメトリ直接 LLM 診断 |
+| `raw_telemetry_<mode>_<run_id>.png` | 生テレメトリ時系列 |
+| `pca_plot_<mode>_<run_id>.png` | PCA スコア時系列 |
+| `pca_variance_<mode>_<run_id>.png` | PCA 寄与率 |
+
+ログ解析の成果物名には、履歴を追えるように解析方式と実行IDを付けます。
+
+```text
+<種別>_<analysis_mode>[_video]_<YYYYMMDD_HHMMSS_microseconds>_<input_stem>.<ext>
+```
+
+例:
+
+```text
+drone_analysis_report_pca_20260619_135315_341037_log_7_2026-3-10-10-46-34.md
+raw_telemetry_raw_20260619_135315_341037_log_7_2026-3-10-10-46-34.png
+```
 
 動画単体解析の主な出力:
 
@@ -418,10 +431,10 @@ output/runs/YYYYMMDD_HHMMSS_<input_stem>/
 
 | ファイル | 内容 |
 | --- | --- |
-| `workspace/<入力名>_telemetry_data_<実行ID>.csv` | 同期済みテレメトリ |
+| `workspace/<入力名>_<mode>_telemetry_data_<実行ID>.csv` | 同期済みテレメトリ |
 | `workspace/flight_history.csv` | フライト履歴 |
-| `workspace/llm_prompt.txt` | ログ解析 export プロンプト |
-| `workspace/raw_telemetry_llm_prompt.txt` | raw モードのログ直接診断 export プロンプト |
+| `workspace/llm_prompt_<mode>_<run_id>.txt` | ログ解析 export プロンプト |
+| `workspace/raw_telemetry_llm_prompt_<mode>_<run_id>.txt` | raw モードのログ直接診断 export プロンプト |
 | `workspace/video_llm_prompt.txt` | 動画単体 export プロンプト |
 
 ## Markdown レポートの主なセクション
@@ -471,7 +484,7 @@ python .\main.py .\flight.ulg --mode export
 出力:
 
 ```text
-workspace/llm_prompt.txt
+workspace/llm_prompt_<mode>_<run_id>.txt
 ```
 
 raw モードでは PCA を使わない直接診断プロンプトを出力します。
@@ -483,25 +496,25 @@ python .\main.py .\flight.ulg --analysis-mode raw --mode export
 出力:
 
 ```text
-workspace/raw_telemetry_llm_prompt.txt
+workspace/raw_telemetry_llm_prompt_<mode>_<run_id>.txt
 ```
 
 Claude Code:
 
 ```powershell
-claude "workspace/llm_prompt.txt を読み込み、指示に従ってドローン解析診断レポートを日本語Markdownで作成し、output/diagnosis_claude.md に保存してください。"
+claude "workspace/llm_prompt_<mode>_<run_id>.txt を読み込み、指示に従ってドローン解析診断レポートを日本語Markdownで作成し、output/diagnosis_claude.md に保存してください。"
 ```
 
 Agy:
 
 ```powershell
-agy run "workspace/llm_prompt.txt を読み込み、ドローン解析診断レポートを日本語Markdownで output/diagnosis_agy.md に作成してください。"
+agy run "workspace/llm_prompt_<mode>_<run_id>.txt を読み込み、ドローン解析診断レポートを日本語Markdownで output/diagnosis_agy.md に作成してください。"
 ```
 
 Codex:
 
 ```text
-workspace/llm_prompt.txt を読み込み、ドローン飛行解析の診断レポートを日本語Markdownで作成し、output/diagnosis_codex.md に保存してください。
+workspace/llm_prompt_<mode>_<run_id>.txt を読み込み、ドローン飛行解析の診断レポートを日本語Markdownで作成し、output/diagnosis_codex.md に保存してください。
 ```
 
 ### 動画単体プロンプト

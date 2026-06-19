@@ -66,7 +66,7 @@ class LLMInterpreter(AnalysisModule):
         if mode == 'export':
             self.log("LLM Mode is 'export'. Exporting prompt to file...")
             workspace_dir = getattr(self.context, 'workspace_dir', 'workspace')
-            prompt_file = os.path.join(workspace_dir, "llm_prompt.txt")
+            prompt_file = os.path.join(workspace_dir, self._prompt_filename("llm_prompt"))
             try:
                 os.makedirs(os.path.dirname(prompt_file), exist_ok=True)
                 with open(prompt_file, 'w', encoding='utf-8') as f:
@@ -367,3 +367,10 @@ claude "Read {prompt_file} and generate a detailed flight diagnosis report based
         if not descriptions:
             descriptions.append("列名から用途を明確に断定できない特徴量")
         return "; ".join(descriptions)
+
+    def _prompt_filename(self, stem):
+        run_output = self.context.get_artifact("run_output") or {}
+        output_tag = run_output.get("output_tag")
+        if output_tag:
+            return f"{stem}_{output_tag}.txt"
+        return f"{stem}.txt"
