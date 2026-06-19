@@ -35,6 +35,7 @@ class DroneReportExporter:
         video_coverage = self.context.get_artifact("video_coverage")
         video_events = self.context.get_data("video_events")
         telemetry_video_comparison = self.context.get_artifact("telemetry_video_comparison")
+        raw_summary = self.context.get_artifact("raw_telemetry_summary")
 
         if not any([
             ulg_report,
@@ -50,12 +51,14 @@ class DroneReportExporter:
             video_coverage,
             video_events is not None and not video_events.empty,
             telemetry_video_comparison,
+            raw_summary,
         ]):
             return
 
         report_file.write("## Drone Flight Log Details\n\n")
         self._write_ulg_parse_report(report_file, ulg_report)
         self._write_csv_parse_report(report_file, csv_report)
+        self._write_raw_telemetry_summary(report_file, raw_summary)
         self._write_pca_preprocessing_report(report_file, pca_preprocessing)
         self._write_anomaly_report(report_file, anomaly_config, anomaly_details)
         self._write_structural_break_report(report_file, structural_break)
@@ -322,6 +325,35 @@ class DroneReportExporter:
 
         if telemetry_video_comparison:
             self._write_records(report_file, "Telemetry vs Video", telemetry_video_comparison)
+
+    def _write_raw_telemetry_summary(self, report_file, raw_summary):
+        if not raw_summary:
+            return
+
+        report_file.write("### Raw Telemetry Direct Summary\n\n")
+        self._write_overview_table(
+            report_file,
+            raw_summary,
+            [
+                "status",
+                "method",
+                "rows",
+                "columns",
+                "numeric_columns",
+                "duration_s",
+            ],
+        )
+        self._write_dict_table(
+            report_file,
+            "Raw Telemetry Category Counts",
+            raw_summary.get("category_counts"),
+            "Category",
+            "Columns",
+        )
+        self._write_records(report_file, "Raw Telemetry Missing Columns", raw_summary.get("missing_columns"))
+        self._write_records(report_file, "Raw Telemetry Representative Column Stats", raw_summary.get("column_stats"))
+        self._write_records(report_file, "Raw Telemetry Sudden Change Candidates", raw_summary.get("sudden_changes"))
+        self._write_records(report_file, "Raw Telemetry Range Flags", raw_summary.get("range_flags"))
 
     def _write_overview_table(self, report_file, values, keys):
         rows = [

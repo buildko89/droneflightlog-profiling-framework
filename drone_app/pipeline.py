@@ -12,6 +12,7 @@ from drone_app.history_manager import FlightHistoryManager
 from drone_app.interpreter import LLMInterpreter
 from drone_app.llm_clients import create_llm_client, resolve_llm_settings
 from drone_app.parser import UlgParser
+from drone_app.raw_interpreter import RawTelemetryInterpreter
 from drone_app.report_exporter import DroneReportExporter
 from drone_app.video_analyzer import VideoAnalyzer
 from drone_app.visualizer import TelemetryVisualizer
@@ -41,21 +42,28 @@ def run_analysis_pipeline(
     break_min_history=5,
     break_recent_window=2,
     break_threshold_sigma=2.0,
+    analysis_mode="pca",
 ):
     """
     Runs the full drone telemetry analysis pipeline for CLI and UI callers.
     """
     os.makedirs(workspace_dir, exist_ok=True)
-    effective_output_dir = _resolve_output_dir(output_dir, file_path, run_output_subdir, run_id)
+    effective_run_id = _resolve_run_id(file_path, run_id)
+    effective_output_dir = _resolve_output_dir(output_dir, run_output_subdir, effective_run_id)
     os.makedirs(effective_output_dir, exist_ok=True)
 
     context = ProfileCoreContext(workspace_dir=workspace_dir)
     context.add_log("Pipeline started.")
+    context.set_artifact("analysis_mode", {
+        "mode": analysis_mode,
+        "notes": "raw mode uses direct telemetry statistics without PCA." if analysis_mode == "raw" else "pca mode uses telemetry PCA and PCA score anomaly detection.",
+    })
     context.set_artifact("input_file", _source_metadata(file_path))
     context.set_artifact("run_output", {
         "output_dir": effective_output_dir,
         "base_output_dir": output_dir,
         "run_output_subdir": bool(run_output_subdir),
+        "run_id": effective_run_id,
     })
 
     _status(status_callback, "データパース中...")
@@ -64,40 +72,62 @@ def run_analysis_pipeline(
     context.set_artifact("data_quality", build_data_quality_summary(df))
     context.add_log(f"Parsed {len(df)} samples into context with key 'raw_data'")
 
-    csv_path = os.path.join(workspace_dir, "telemetry_data.csv")
+    csv_path = _resolve_csv_output_path(workspace_dir, file_path, effective_run_id)
     df.to_csv(csv_path)
     context.add_log(f"Raw data saved to: {csv_path}")
 
-    _status(status_callback, "PCA分析中...")
-    analyzer = TelemetryAnalyzer(context)
-    analyzer.analyze(
-        data_key="raw_data",
-        n_components=3,
-        anomaly_z_threshold=anomaly_z_threshold,
-    )
+    if analysis_mode not in ("pca", "raw"):
+        raise ValueError("analysis_mode must be either 'pca' or 'raw'.")
+
     FlightPhaseAnalyzer(context).analyze(data_key="raw_data")
-    pca_variance = context.get_data("pca_variance")
-    _set_feature_status(context, pca_variance)
-    context.set_artifact("summary_insights", build_summary_insights(context, pca_variance))
+    if analysis_mode == "pca":
+        _status(status_callback, "PCA分析中...")
+        analyzer = TelemetryAnalyzer(context)
+        analyzer.analyze(
+            data_key="raw_data",
+            n_components=3,
+            anomaly_z_threshold=anomaly_z_threshold,
+        )
+        pca_variance = context.get_data("pca_variance")
+        _set_feature_status(context, pca_variance)
+        context.set_artifact("summary_insights", build_summary_insights(context, pca_variance))
+    else:
+        context.set_artifact("feature_extraction_status", {
+            "status": "completed",
+            "method": "raw_telemetry_direct",
+            "n_components": 0,
+        })
+        context.set_artifact("summary_insights", [{
+            "level": "info",
+            "message": "Raw telemetry direct analysis mode: PCA and PCA score anomaly detection were skipped.",
+        }])
 
     _status(status_callback, "グラフ生成中...")
     visualizer = TelemetryVisualizer(context, output_dir=effective_output_dir)
     visualizer.plot_raw_telemetry(filename="raw_telemetry.png")
-    visualizer.plot_pca_results(filename="pca_plot.png")
-    visualizer.plot_variance(filename="pca_variance.png")
+    if analysis_mode == "pca":
+        visualizer.plot_pca_results(filename="pca_plot.png")
+        visualizer.plot_variance(filename="pca_variance.png")
     context.add_log(f"Visualizations generated and saved to '{effective_output_dir}' folder.")
 
-    _status(status_callback, "履歴の記録と経年劣化の検知中...")
-    FlightHistoryManager(context).update_history(
-        source_path=file_path,
-        duplicate_policy=history_duplicate_policy,
-    )
-    StructuralBreakAnalyzer(
-        context,
-        min_history=break_min_history,
-        recent_window=break_recent_window,
-        threshold_sigma=break_threshold_sigma,
-    ).detect_breaks()
+    if analysis_mode == "pca":
+        _status(status_callback, "履歴の記録と経年劣化の検知中...")
+        FlightHistoryManager(context).update_history(
+            source_path=file_path,
+            duplicate_policy=history_duplicate_policy,
+        )
+        StructuralBreakAnalyzer(
+            context,
+            min_history=break_min_history,
+            recent_window=break_recent_window,
+            threshold_sigma=break_threshold_sigma,
+        ).detect_breaks()
+    else:
+        context.set_data("structural_break", {
+            "status": "skipped",
+            "reason": "raw_telemetry_mode_skips_pca_history",
+            "detected": False,
+        })
 
     if video_path:
         _status(status_callback, "動画解析中...")
@@ -124,12 +154,17 @@ def run_analysis_pipeline(
         require_api_key=llm_settings["mode"] != "export",
     )
 
-    interpreter = LLMInterpreter(context, llm_client=client)
+    interpreter = (
+        RawTelemetryInterpreter(context, llm_client=client)
+        if analysis_mode == "raw"
+        else LLMInterpreter(context, llm_client=client)
+    )
     if diagnosis_filename:
         diagnosis_path = os.path.join(effective_output_dir, diagnosis_filename)
     else:
         safe_model_name = client.model_name.replace("/", "_").replace(":", "_")
-        diagnosis_path = os.path.join(effective_output_dir, f"diagnosis_{safe_model_name}.md")
+        prefix = "raw_telemetry_diagnosis" if analysis_mode == "raw" else "diagnosis"
+        diagnosis_path = os.path.join(effective_output_dir, f"{prefix}_{safe_model_name}.md")
 
     if not interpreter.run_interpretation(output_file=diagnosis_path):
         raise RuntimeError(f"LLM Interpretation failed using client '{llm_settings['service']}'.")
@@ -154,8 +189,8 @@ def run_analysis_pipeline(
         "output_dir": effective_output_dir,
         "report_path": os.path.join(effective_output_dir, report_filename),
         "raw_telemetry_path": os.path.join(effective_output_dir, "raw_telemetry.png"),
-        "pca_plot_path": os.path.join(effective_output_dir, "pca_plot.png"),
-        "pca_variance_path": os.path.join(effective_output_dir, "pca_variance.png"),
+        "pca_plot_path": os.path.join(effective_output_dir, "pca_plot.png") if analysis_mode == "pca" else None,
+        "pca_variance_path": os.path.join(effective_output_dir, "pca_variance.png") if analysis_mode == "pca" else None,
     }
 
 
@@ -230,20 +265,36 @@ def _source_metadata(file_path):
     return metadata
 
 
-def _resolve_output_dir(base_output_dir, file_path, run_output_subdir, run_id):
+def _resolve_output_dir(base_output_dir, run_output_subdir, run_id):
     if not run_output_subdir:
         return base_output_dir
 
-    if not run_id:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        file_stem = os.path.splitext(os.path.basename(file_path))[0] or "flight"
-        safe_stem = "".join(
-            character if character.isalnum() or character in ("-", "_") else "_"
-            for character in file_stem
-        ).strip("_") or "flight"
-        run_id = f"{timestamp}_{safe_stem}"
-
     return os.path.join(base_output_dir, "runs", run_id)
+
+
+def _resolve_csv_output_path(workspace_dir, file_path, run_id):
+    safe_stem = _safe_file_stem(file_path)
+    safe_run_id = _safe_name(run_id)
+    return os.path.join(workspace_dir, f"{safe_stem}_telemetry_data_{safe_run_id}.csv")
+
+
+def _resolve_run_id(file_path, run_id=None):
+    if run_id:
+        return _safe_name(run_id)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    return f"{timestamp}_{_safe_file_stem(file_path)}"
+
+
+def _safe_file_stem(file_path):
+    return _safe_name(os.path.splitext(os.path.basename(file_path))[0] or "flight")
+
+
+def _safe_name(value):
+    safe_value = "".join(
+        character if character.isalnum() or character in ("-", "_") else "_"
+        for character in str(value)
+    ).strip("_")
+    return safe_value or "flight"
 
 
 def _status(callback, message):

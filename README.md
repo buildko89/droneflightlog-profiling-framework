@@ -2,13 +2,14 @@
 
 PX4 ドローンのフライトログ、テレメトリ CSV、動画ファイルを解析する Python ベースの PoC フレームワークです。
 
-主な用途は、フライトログの統計解析、PCA による異常スパイク検出、複数フライト履歴による構造的変化検知、LLM による日本語診断、動画との照合、動画単体解析です。CLI と Streamlit UI の両方から利用できます。
+主な用途は、フライトログの統計解析、生テレメトリ直接診断、PCA による異常スパイク検出、複数フライト履歴による構造的変化検知、LLM による日本語診断、動画との照合、動画単体解析です。CLI と Streamlit UI の両方から利用できます。
 
 ## できること
 
 - PX4 `.ulg` ログの読み込み
 - テレメトリ CSV の読み込みと列名マッピング
 - ULog トピックの代替解決、複数インスタンス取得、共通時刻グリッド同期
+- PCA を使わない生テレメトリ直接要約と AI 診断
 - PCA による主成分スコア、寄与率、主成分負荷量の算出
 - Z-score による PCA スコアスパイク検出
 - ログ側フライトフェーズ推定
@@ -33,6 +34,13 @@ PX4 ドローンのフライトログ、テレメトリ CSV、動画ファイル
 | 動画付きログ解析 | `.ulg` / `.csv` + 動画 | `main.py` / `dronelog_uiapps.py` | ログ解析レポート + 動画照合 |
 | 動画単体解析 | 動画のみ | `video_main.py` / `video_uiapps.py` | `video_analysis_report.md` |
 
+ログ解析では `--analysis-mode` で解析方式を選択できます。
+
+| 方式 | 内容 | 主な用途 |
+| --- | --- | --- |
+| `pca` | 従来の PCA 診断。主成分スコア、寄与率、ローディング、PCA スパイクを LLM に渡す | 多変量の変動軸や異常スパイクを見たい場合 |
+| `raw` | PCA を使わず、生テレメトリ列の統計、欠損、急変、範囲外候補を LLM に渡す | 元ログに近い形で姿勢、高度、速度、IMU、GPS、バッテリー、モーター出力を確認したい場合 |
+
 ## 設計方針
 
 動画とログは混ぜて PCA に投入しません。
@@ -40,6 +48,7 @@ PX4 ドローンのフライトログ、テレメトリ CSV、動画ファイル
 ```text
 ログ解析
   -> PCA / 異常検知 / フライトフェーズ / 経年劣化
+  -> または raw モードで生テレメトリ直接診断
 
 動画解析
   -> メタデータ / brightness / blur / motion / video events
@@ -73,6 +82,7 @@ PX4 ドローンのフライトログ、テレメトリ CSV、動画ファイル
 │   ├── report_exporter.py          # ログ解析 Markdown exporter
 │   ├── video_report_exporter.py    # 動画単体 Markdown exporter
 │   ├── interpreter.py              # ログ解析 LLM 診断
+│   ├── raw_interpreter.py          # 生テレメトリ直接 LLM 診断
 │   ├── video_interpreter.py        # 動画単体 LLM 診断
 │   ├── llm_clients.py              # LLM クライアント
 │   ├── visualizer.py               # グラフ生成
@@ -156,6 +166,12 @@ CSV マッピング付き:
 python .\main.py .\telemetry.csv --csv-config .\csv_mapping.json --llm dummy
 ```
 
+PCA を使わずに生テレメトリを直接診断:
+
+```powershell
+python .\main.py .\flight.ulg --llm dummy --analysis-mode raw
+```
+
 API を呼ばずにプロンプトだけ出す:
 
 ```powershell
@@ -172,6 +188,7 @@ python .\main.py .\flight.ulg --mode export
 | `--llm-config` | LLM 設定 JSON |
 | `--csv-config` | CSV マッピング JSON |
 | `--mode` | `api` / `export` |
+| `--analysis-mode` | `pca` / `raw`。`raw` は PCA を使わない生テレメトリ直接診断 |
 | `--anomaly-z-threshold` | PCA 異常検知 Z-score 閾値 |
 | `--break-min-history` | 構造的変化検知に必要な最低履歴数 |
 | `--break-threshold-sigma` | 構造的変化検知の閾値倍率 |
@@ -283,6 +300,7 @@ python -m streamlit run .\dronelog_uiapps.py
 - LLM タイプを選択
 - モデルをプルダウンで選択
 - `api` / `export` を選択
+- 解析方式 `pca` / `raw` を選択
 - PCA 異常検知 Z-score 閾値を指定
 - 動画同期オフセットを指定
 - カメラ視点を指定
@@ -384,6 +402,7 @@ output/runs/YYYYMMDD_HHMMSS_<input_stem>/
 | --- | --- |
 | `drone_analysis_report.md` | 統合 Markdown レポート |
 | `diagnosis_<model>.md` / `diagnosis.md` | LLM 診断 |
+| `raw_telemetry_diagnosis_<model>.md` | raw モードの生テレメトリ直接 LLM 診断 |
 | `raw_telemetry.png` | 生テレメトリ時系列 |
 | `pca_plot.png` | PCA スコア時系列 |
 | `pca_variance.png` | PCA 寄与率 |
@@ -399,9 +418,10 @@ output/runs/YYYYMMDD_HHMMSS_<input_stem>/
 
 | ファイル | 内容 |
 | --- | --- |
-| `workspace/telemetry_data.csv` | 同期済みテレメトリ |
+| `workspace/<入力名>_telemetry_data_<実行ID>.csv` | 同期済みテレメトリ |
 | `workspace/flight_history.csv` | フライト履歴 |
 | `workspace/llm_prompt.txt` | ログ解析 export プロンプト |
+| `workspace/raw_telemetry_llm_prompt.txt` | raw モードのログ直接診断 export プロンプト |
 | `workspace/video_llm_prompt.txt` | 動画単体 export プロンプト |
 
 ## Markdown レポートの主なセクション
@@ -415,6 +435,7 @@ output/runs/YYYYMMDD_HHMMSS_<input_stem>/
 - PCA Loadings
 - ULog Parse Report
 - CSV Parse Report
+- Raw Telemetry Direct Summary
 - PCA Anomaly Detection Report
 - Structural Break Report
 - Telemetry Flight Phases
@@ -451,6 +472,18 @@ python .\main.py .\flight.ulg --mode export
 
 ```text
 workspace/llm_prompt.txt
+```
+
+raw モードでは PCA を使わない直接診断プロンプトを出力します。
+
+```powershell
+python .\main.py .\flight.ulg --analysis-mode raw --mode export
+```
+
+出力:
+
+```text
+workspace/raw_telemetry_llm_prompt.txt
 ```
 
 Claude Code:

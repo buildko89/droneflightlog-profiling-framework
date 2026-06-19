@@ -45,6 +45,7 @@ def run_ui_analysis(
     model_name,
     mode="api",
     anomaly_z_threshold=3.0,
+    analysis_mode="pca",
     video_path=None,
     video_offset_s=0.0,
     camera_viewpoint="external",
@@ -71,6 +72,7 @@ def run_ui_analysis(
         diagnosis_filename=DIAGNOSIS_FILENAME,
         report_filename=REPORT_FILENAME,
         anomaly_z_threshold=anomaly_z_threshold,
+        analysis_mode=analysis_mode,
         video_path=video_path,
         video_offset_s=video_offset_s,
         camera_viewpoint=camera_viewpoint,
@@ -126,7 +128,7 @@ def render_results(results):
                     width="stretch",
                 )
         with col2:
-            if os.path.exists(results["pca_plot_path"]):
+            if results.get("pca_plot_path") and os.path.exists(results["pca_plot_path"]):
                 st.image(
                     results["pca_plot_path"],
                     caption="主成分スコア時系列推移",
@@ -135,7 +137,7 @@ def render_results(results):
         
         # 寄与率は下に全幅で配置し、バランスを整える
         st.write("---")
-        if os.path.exists(results["pca_variance_path"]):
+        if results.get("pca_variance_path") and os.path.exists(results["pca_variance_path"]):
             st.image(
                 results["pca_variance_path"],
                 caption="各主成分の寄与率",
@@ -328,6 +330,14 @@ def main():
         help="export はAPIを呼び出さず、診断用プロンプトをファイルに書き出します。",
         key="sidebar_llm_mode",
     )
+    analysis_mode = st.sidebar.radio(
+        "解析方式",
+        options=["pca", "raw"],
+        index=0,
+        horizontal=True,
+        help="raw は PCA を使わず、生テレメトリ統計だけでAI診断します。",
+        key="sidebar_analysis_mode",
+    )
     anomaly_z_threshold = st.sidebar.number_input(
         "異常検知Z-score閾値",
         min_value=1.0,
@@ -370,7 +380,7 @@ def main():
         st.sidebar.info("dummy はAPIキーなしで動作確認できます。")
 
     st.title("profilecore - ドローンフライトログ AI×統計解析ダッシュボード")
-    st.write("フライトログ（.ulg または .csv）をアップロードし、PCAとLLMによる診断を実行します。")
+    st.write("フライトログ（.ulg または .csv）をアップロードし、PCAまたは生テレメトリ直接要約とLLMによる診断を実行します。")
 
     uploaded_file = st.file_uploader(
         "フライトログファイルをアップロードしてください (.ulg, .csv)",
@@ -407,6 +417,7 @@ def main():
                     llm_type,
                     model_name,
                     mode=mode,
+                    analysis_mode=analysis_mode,
                     anomaly_z_threshold=anomaly_z_threshold,
                     video_path=temp_video_path,
                     video_offset_s=video_offset_s,

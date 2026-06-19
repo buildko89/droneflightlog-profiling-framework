@@ -64,6 +64,13 @@ def main():
     )
 
     parser.add_argument(
+        "--analysis-mode",
+        choices=["pca", "raw"],
+        default="pca",
+        help="解析方式。pca=従来のPCA診断, raw=生テレメトリ直接診断 (デフォルト: pca)"
+    )
+
+    parser.add_argument(
         "--flat-output",
         action="store_true",
         help="output/runs配下ではなく従来どおりoutput直下に成果物を出力する"
@@ -121,6 +128,7 @@ def main():
             video_alignment_confidence=args.video_alignment_confidence,
             break_min_history=args.break_min_history,
             break_threshold_sigma=args.break_threshold_sigma,
+            analysis_mode=args.analysis_mode,
         )
     except Exception as e:
         print(f"\n[CRITICAL ERROR] Pipeline failed: {str(e)}")

@@ -9,7 +9,7 @@ os.environ.setdefault("MPLBACKEND", "Agg")
 import pandas as pd
 
 from drone_app.analyzer import TelemetryAnalyzer
-from drone_app.pipeline import run_analysis_pipeline
+from drone_app.pipeline import _resolve_csv_output_path, run_analysis_pipeline
 from drone_app.report_exporter import DroneReportExporter
 from drone_app.visualizer import TelemetryVisualizer
 from profilecore.core.context import ProfileCoreContext
@@ -181,6 +181,8 @@ class TestDroneProfileCoreIntegration(unittest.TestCase):
 
         anomaly_config = results["context"].get_artifact("anomaly_detection_config")
         self.assertEqual(anomaly_config["z_threshold"], 2.5)
+        self.assertTrue(os.path.exists(results["csv_path"]))
+        self.assertIn("telemetry_telemetry_data_", os.path.basename(results["csv_path"]))
 
         with open(results["report_path"], encoding="utf-8") as report_file:
             report = report_file.read()
@@ -188,6 +190,52 @@ class TestDroneProfileCoreIntegration(unittest.TestCase):
         self.assertIn("PCA Preprocessing Report", report)
         self.assertIn("PCA Anomaly Detection Report", report)
         self.assertIn("Structural Break Report", report)
+
+    def test_pipeline_runs_raw_telemetry_mode_with_dummy_llm(self):
+        csv_path = os.path.join(self.output_dir, "telemetry_raw.csv")
+        telemetry = self._synthetic_telemetry()
+        telemetry.loc[telemetry.index[25], "sensor_combined_accelerometer_m_s2[0]"] = 55.0
+        telemetry["battery_voltage_v"] = [12.0 - i * 0.02 for i in range(len(telemetry))]
+        telemetry.reset_index(names="time").to_csv(csv_path, index=False)
+
+        results = run_analysis_pipeline(
+            csv_path,
+            llm_type="dummy",
+            workspace_dir=self.output_dir,
+            output_dir=self.output_dir,
+            run_output_subdir=False,
+            diagnosis_filename="raw_telemetry_diagnosis.md",
+            report_filename="raw_telemetry_report.md",
+            analysis_mode="raw",
+        )
+
+        context = results["context"]
+        raw_summary = context.get_artifact("raw_telemetry_summary")
+        self.assertIsNotNone(raw_summary)
+        self.assertEqual(raw_summary["method"], "raw_telemetry_direct")
+        self.assertIsNone(results["pca_plot_path"])
+        self.assertIsNone(results["pca_variance_path"])
+        self.assertIsNone(context.get_data("pca_scores"))
+        self.assertTrue(os.path.exists(results["diagnosis_path"]))
+        self.assertTrue(os.path.exists(results["report_path"]))
+
+        with open(results["diagnosis_path"], encoding="utf-8") as diagnosis_file:
+            diagnosis = diagnosis_file.read()
+        self.assertIn("生テレメトリ直接診断", diagnosis)
+
+        with open(results["report_path"], encoding="utf-8") as report_file:
+            report = report_file.read()
+        self.assertIn("Raw Telemetry Direct Summary", report)
+        self.assertIn("Raw Telemetry Representative Column Stats", report)
+        self.assertIn("raw_telemetry_direct", report)
+
+    def test_csv_output_path_includes_source_name_and_run_id(self):
+        first_path = _resolve_csv_output_path(self.output_dir, "flight.ulg", "run_one")
+        second_path = _resolve_csv_output_path(self.output_dir, "flight.ulg", "run_two")
+
+        self.assertNotEqual(first_path, second_path)
+        self.assertEqual(os.path.basename(first_path), "flight_telemetry_data_run_one.csv")
+        self.assertEqual(os.path.basename(second_path), "flight_telemetry_data_run_two.csv")
 
     def test_pipeline_export_mode_writes_prompt_without_api_key(self):
         csv_path = os.path.join(self.output_dir, "telemetry_export.csv")
