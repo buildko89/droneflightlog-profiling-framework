@@ -598,5 +598,3 @@ python .\video_main.py .\flight_video.mp4 --camera-viewpoint external
 ## 参考ドキュメント
 
 - [動画とフライトログ統合解析の利用手順](video_log_analysis_usage.md)
-- [動画単体解析 実装プラン](devai/plan20260618_video_only_analysis_codex.md)
-- [動画単体解析 実装レポート](devai/implementation20260618_video_only_analysis_codex.md)
